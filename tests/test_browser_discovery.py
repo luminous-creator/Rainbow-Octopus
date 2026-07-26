@@ -205,7 +205,7 @@ class BrowserDiscoveryTests(unittest.TestCase):
         )
         self.assertEqual(
             _graphics_flags(Path("/Applications/Google Chrome")),
-            ("--disable-gpu",),
+            (),
         )
 
 

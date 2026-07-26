@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 from .models import AcceptanceCheck, AcceptanceReport, TaskSpec
 
@@ -290,7 +291,7 @@ def _graphics_flags(path: Path) -> tuple[str, ...]:
             "--disable-software-rasterizer",
             "--disable-features=Vulkan,CanvasOopRasterization,UseSkiaRenderer",
         )
-    return ("--disable-gpu",)
+    return ()
 
 
 class BrowserVerifier:
@@ -622,6 +623,8 @@ setTimeout(() => __roctoReport([{{
             f"--screenshot={screenshot}",
             url,
         ]
+        if browser_name(self.browser_path) != "Microsoft Edge":
+            return self._take_screenshot_until_written(command, screenshot, profile)
         try:
             result = subprocess.run(
                 command,
@@ -645,6 +648,74 @@ setTimeout(() => __roctoReport([{{
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return False, str(exc)
+
+    def _take_screenshot_until_written(
+        self, command: list[str], screenshot: Path, profile: Path
+    ) -> tuple[bool, str]:
+        """Stop unified Chromium headless once its screenshot is complete.
+
+        Chrome on macOS can leave its parent process alive after writing the
+        requested screenshot. Waiting for process exit turns a valid capture
+        into a timeout, so non-Edge browsers are watched for a stable, non-empty
+        output file and then torn down explicitly. Edge keeps KI-001's proven
+        ``subprocess.run`` path above.
+        """
+        log_path = profile.parent / "browser-screenshot-stderr.log"
+        try:
+            log_file = log_path.open("w", encoding="utf-8", errors="replace")
+        except OSError:
+            log_file = None
+
+        try:
+            process = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=log_file or subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            if log_file:
+                log_file.close()
+            return False, str(exc)
+
+        deadline = time.monotonic() + self.timeout
+        last_size = -1
+        stable_since: float | None = None
+        ready = False
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    size = screenshot.stat().st_size if screenshot.is_file() else 0
+                except OSError:
+                    size = 0
+                if size > 0:
+                    now = time.monotonic()
+                    if size != last_size:
+                        last_size = size
+                        stable_since = now
+                    elif stable_since is not None and now - stable_since >= 0.2:
+                        ready = True
+                        break
+                if process.poll() is not None:
+                    ready = size > 0
+                    break
+                time.sleep(0.05)
+        finally:
+            _terminate(process)
+            if log_file:
+                log_file.close()
+
+        if ready:
+            return True, "screenshot.png created"
+
+        tail = ""
+        try:
+            tail = log_path.read_text(encoding="utf-8", errors="replace")[-500:]
+        except OSError:
+            pass
+        detail = f"screenshot was not created within {self.timeout}s"
+        if tail.strip():
+            detail = f"{detail}; browser stderr: {tail.strip()}"
+        return False, detail
 
 
 def _terminate(process: subprocess.Popen) -> None:

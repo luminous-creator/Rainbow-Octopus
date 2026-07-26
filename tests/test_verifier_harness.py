@@ -188,6 +188,58 @@ class HarnessRunTests(unittest.TestCase):
         self.assertIn("no such file", result["checks"][0].detail)
 
 
+class ScreenshotProcessTests(unittest.TestCase):
+    def test_non_edge_browser_is_stopped_after_writing_the_screenshot(self):
+        verifier = BrowserVerifier(browser_path=Path("/fake/chromium"), timeout=2)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            screenshot = root / "screenshot.png"
+            process = _StubProcess(on_start=lambda: screenshot.write_bytes(b"png"))
+            with mock.patch(
+                "rainbow_octopus.verifier.subprocess.Popen",
+                return_value=process,
+            ):
+                ok, detail = verifier._take_screenshot(
+                    "http://127.0.0.1/site", screenshot, root / "profile"
+                )
+        self.assertTrue(ok, detail)
+        self.assertTrue(process.terminated)
+
+    def test_non_edge_screenshot_times_out_when_no_file_is_written(self):
+        verifier = BrowserVerifier(browser_path=Path("/fake/chromium"), timeout=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            process = _StubProcess()
+            with mock.patch(
+                "rainbow_octopus.verifier.subprocess.Popen",
+                return_value=process,
+            ):
+                ok, detail = verifier._take_screenshot(
+                    "http://127.0.0.1/site",
+                    root / "screenshot.png",
+                    root / "profile",
+                )
+        self.assertFalse(ok)
+        self.assertIn("not created", detail)
+        self.assertTrue(process.terminated)
+
+    def test_non_edge_screenshot_reports_an_unlaunchable_browser(self):
+        verifier = BrowserVerifier(browser_path=Path("/fake/chromium"), timeout=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch(
+                "rainbow_octopus.verifier.subprocess.Popen",
+                side_effect=OSError("cannot launch"),
+            ):
+                ok, detail = verifier._take_screenshot(
+                    "http://127.0.0.1/site",
+                    root / "screenshot.png",
+                    root / "profile",
+                )
+        self.assertFalse(ok)
+        self.assertIn("cannot launch", detail)
+
+
 class InjectionTests(unittest.TestCase):
     def test_harness_posts_to_the_result_endpoint_and_has_a_watchdog(self):
         verifier = BrowserVerifier(edge_path=Path("/fake/msedge"), timeout=30)
