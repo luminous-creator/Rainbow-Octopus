@@ -281,6 +281,18 @@ def _headless_flag(path: Path) -> str:
     return "--headless"
 
 
+def _graphics_flags(path: Path) -> tuple[str, ...]:
+    """Scope KI-001's Windows Edge workaround to the browser it fixed."""
+    if browser_name(path) == "Microsoft Edge":
+        return (
+            "--disable-gpu",
+            "--disable-gpu-sandbox",
+            "--disable-software-rasterizer",
+            "--disable-features=Vulkan,CanvasOopRasterization,UseSkiaRenderer",
+        )
+    return ("--disable-gpu",)
+
+
 class BrowserVerifier:
     def __init__(
         self,
@@ -539,10 +551,7 @@ setTimeout(() => __roctoReport([{{
             # KI-001: --headless=new crashes the GPU process on Windows 11 and
             # then blocks forever. Old headless is stable.
             _headless_flag(self.browser_path),
-            "--disable-gpu",
-            "--disable-gpu-sandbox",
-            "--disable-software-rasterizer",
-            "--disable-features=Vulkan,CanvasOopRasterization,UseSkiaRenderer",
+            *_graphics_flags(self.browser_path),
             "--disable-extensions",
             "--no-first-run",
             "--no-default-browser-check",
@@ -605,10 +614,7 @@ setTimeout(() => __roctoReport([{{
             str(self.browser_path),
             # KI-001: see _run_edge_harness — old headless required on Windows 11.
             _headless_flag(self.browser_path),
-            "--disable-gpu",
-            "--disable-gpu-sandbox",
-            "--disable-software-rasterizer",
-            "--disable-features=Vulkan,CanvasOopRasterization,UseSkiaRenderer",
+            *_graphics_flags(self.browser_path),
             "--hide-scrollbars",
             "--no-first-run",
             f"--user-data-dir={profile}",

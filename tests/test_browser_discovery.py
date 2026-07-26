@@ -9,6 +9,7 @@ from unittest import mock
 from rainbow_octopus import doctor
 from rainbow_octopus.doctor import DoctorCheck
 from rainbow_octopus.verifier import (
+    _graphics_flags,
     _headless_flag,
     browser_install_hint,
     browser_name,
@@ -193,6 +194,14 @@ class BrowserDiscoveryTests(unittest.TestCase):
         self.assertEqual(browser_name(Path("C:/msedge.exe")), "Microsoft Edge")
         self.assertEqual(_headless_flag(Path("C:/msedge.exe")), "--headless=old")
         self.assertEqual(_headless_flag(Path("/usr/bin/chromium")), "--headless")
+        self.assertIn(
+            "--disable-software-rasterizer",
+            _graphics_flags(Path("C:/msedge.exe")),
+        )
+        self.assertEqual(
+            _graphics_flags(Path("/Applications/Google Chrome")),
+            ("--disable-gpu",),
+        )
 
 
 class BrowserDoctorTests(unittest.TestCase):
