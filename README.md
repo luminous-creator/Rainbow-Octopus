@@ -24,6 +24,22 @@ idea → DeepSeek task specification → the first available coding agent
 The first release targets Windows 11 and deliberately supports one task:
 creating a new vanilla HTML/CSS/JavaScript demo in an empty directory.
 
+### Try it with no account, no CLI, no browser
+
+The whole pipeline can be rehearsed offline. Two model calls are replaced by
+fixed responses; the planner, the router, the executor boundary enforcement and
+the static half of the verifier are all the real code:
+
+```bash
+git clone https://github.com/luminous-creator/Rainbow-Octopus
+cd Rainbow-Octopus
+python scripts/dry_run.py router
+```
+
+The `router` scenario simulates a signed-out Claude Code and a broken Codex, and
+shows the failover picking DeepSeek. Takes about ten seconds and needs nothing
+installed — the package has no third-party dependencies.
+
 ## Why this exists
 
 Using AI for engineering means switching windows, rewriting prompts, watching
@@ -102,11 +118,30 @@ Every run records who was chosen and why the others were passed over in
 
 ## Requirements
 
-- Windows 11
+- Windows 11 — see [Portability](#portability)
 - Python 3.10 or newer
 - Microsoft Edge
-- A DeepSeek API key (used for planning, and as the always-available executor)
+- An API key for any OpenAI-compatible chat-completions endpoint, used for
+  planning and as the always-available executor. DeepSeek is the default
+  because it is cheap and does not spend a Claude or ChatGPT subscription quota
 - Optional: Claude Code CLI and/or Codex CLI for the agentic backends
+
+### Using a provider other than DeepSeek
+
+Nothing in the request is DeepSeek-specific — it is a plain
+`/chat/completions` call with `response_format: json_object`. Point it
+anywhere that speaks the same protocol:
+
+```powershell
+$env:ROCTO_API_BASE = "https://api.openai.com/v1"   ; $env:ROCTO_API_KEY = "sk-..."
+$env:ROCTO_API_BASE = "https://openrouter.ai/api/v1"; $env:ROCTO_API_KEY = "sk-or-..."
+$env:ROCTO_API_BASE = "http://localhost:11434/v1"   ; $env:ROCTO_API_KEY = "ollama"
+```
+
+Set `--model` (or `ROCTO_DEEPSEEK_MODEL`) to a model that endpoint serves.
+`DEEPSEEK_API_KEY` still works on its own and needs no other change. A provider
+that ignores `response_format: json_object` fails loudly at the planner's JSON
+parse rather than quietly producing a bad specification.
 
 ## Install
 
@@ -136,7 +171,7 @@ the build only needs one of them:
 
 ```text
 [OK  ] python             3.12.4
-[OK  ] deepseek_key       configured
+[OK  ] planner_api        key configured, endpoint DeepSeek (default)
 [OK  ] executor           auto -> claude, deepseek
 [OK  ] executor:claude    2.1.219 (Claude Code) (subscription)
 [--  ] executor:codex     Codex CLI not found
@@ -297,10 +332,30 @@ v0.1 只生成新的静态网页，不修改已有仓库，不控制 Claude/Chat
 真正跑通。多执行器路由已经可用，但只做固定优先级降级，不做基于历史成功率的智能
 调度——那需要真实数据，属于 v0.2。
 
-The Edge headless blocker (KI-001) and the harness transport bug (KI-003) are
-fixed; the live Edge interaction test still needs to be re-enabled and run on a
-Windows host before v0.1 is called a release candidate. See
-[`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md).
+## Portability
+
+Verification launches Microsoft Edge, and `find_edge()` only knows the two
+Windows install paths, so the browser step is Windows-only today. Nothing about
+the approach requires Edge or Windows: the verifier drives a headless Chromium
+with ordinary flags and reads the verdict over local HTTP, which Chrome,
+Chromium, Brave and Edge on macOS and Linux all support equally. Widening
+browser discovery is the next planned change, tracked as KI-008.
+
+Everything else already runs anywhere: the planner, the router, contract
+checking, the executor boundary rules and `scripts/dry_run.py` are pure Python
+with no platform assumptions, and the full test suite passes on Linux with the
+single browser test skipped.
+
+## Status
+
+KI-001 through KI-007 are fixed. The live Edge interaction test —
+`VerifierTests.test_real_edge_interaction_and_screenshot`, which launches Edge,
+loads the page, clicks through it, asserts, posts the verdict back and captures
+a screenshot — passes on a real Windows 11 host, and
+[`demo-output/pomodoro-2/`](demo-output/pomodoro-2/) is a complete build that
+went through that path end to end. Known limits are in
+[`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md); nothing is claimed there that
+has not been observed.
 
 ## License
 

@@ -12,6 +12,13 @@ import urllib.error
 import urllib.request
 
 from .models import TaskSpec
+from .provider import (
+    completions_url,
+    is_default_provider,
+    missing_key_message,
+    resolve_api_key,
+    resolve_base_url,
+)
 
 #: The only files any executor may create inside an output directory.
 GENERATED_FILES = ("index.html", "styles.css", "script.js", "README.md")
@@ -236,16 +243,17 @@ class DeepSeekExecutor:
     outside --output" boundary absolute instead of merely requested.
     """
 
-    API_URL = "https://api.deepseek.com/chat/completions"
-
     def __init__(
         self,
         api_key: str | None = None,
         model: str | None = None,
         timeout: int = 300,
         transport: HttpTransport = _urlopen_transport,
+        base_url: str | None = None,
     ):
-        self.api_key = api_key or os.environ.get("DEEPSEEK_API_KEY")
+        self.base_url = resolve_base_url(base_url)
+        self.api_url = completions_url(self.base_url)
+        self.api_key = resolve_api_key(api_key)
         self.model = (
             model
             or os.environ.get("ROCTO_DEEPSEEK_CODER_MODEL")
@@ -257,8 +265,9 @@ class DeepSeekExecutor:
 
     def healthcheck(self) -> tuple[bool, str]:
         if not self.api_key:
-            return False, "DEEPSEEK_API_KEY is not set"
-        return True, f"deepseek executor ready (model={self.model})"
+            return False, missing_key_message()
+        where = "" if is_default_provider(self.base_url) else f" at {self.base_url}"
+        return True, f"deepseek executor ready (model={self.model}){where}"
 
     def execute(
         self,
@@ -268,7 +277,7 @@ class DeepSeekExecutor:
         previous_failure: str | None = None,
     ) -> ExecutionResult:
         if not self.api_key:
-            raise ExecutionError("DEEPSEEK_API_KEY is not set")
+            raise ExecutionError(missing_key_message())
         task_path = project_dir / ".rocto" / "task.json"
         before_hash = _sha256(task_path)
 
@@ -291,19 +300,21 @@ class DeepSeekExecutor:
             "User-Agent": "rainbow-octopus/0.1.0",
         }
         try:
-            raw = self.transport(self.API_URL, headers, body, float(self.timeout))
+            raw = self.transport(self.api_url, headers, body, float(self.timeout))
             response = json.loads(raw.decode("utf-8"))
             content = response["choices"][0]["message"]["content"]
             files = _extract_files(content)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise ExecutionError(f"DeepSeek HTTP {exc.code}: {detail}") from exc
+            raise ExecutionError(f"{self.base_url} HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
-            raise ExecutionError(f"Cannot reach DeepSeek: {exc.reason}") from exc
+            raise ExecutionError(f"Cannot reach {self.base_url}: {exc.reason}") from exc
         except ExecutionError:
             raise
         except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise ExecutionError(f"DeepSeek returned an invalid response: {exc}") from exc
+            raise ExecutionError(
+                f"{self.base_url} returned an invalid response: {exc}"
+            ) from exc
 
         written = _write_generated_files(project_dir, files)
 

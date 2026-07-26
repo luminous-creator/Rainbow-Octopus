@@ -351,6 +351,84 @@ assertion, and either a tested `progress-bar` or none declared.
 
 ---
 
+## KI-008 — Verification is Windows-only — **OPEN**
+
+- **Observed:** 2026-07-26
+- **Impact:** adoption. Every other part of the tool is portable; this one
+  function is why the README has to say "Windows 11" on the first line.
+
+### Symptom
+
+`rocto build` cannot verify anything on macOS or Linux, and fails on a Windows
+machine that has Chrome but not Edge. `rocto doctor` reports
+`edge  Microsoft Edge not found` and offers no way forward.
+
+### Root cause
+
+`verifier.find_edge()` checks exactly three places, all Windows:
+
+```python
+Path(os.environ.get("ROCTO_EDGE_BIN", "")),
+Path(os.environ["ProgramFiles(x86)"]) / "Microsoft/Edge/Application/msedge.exe",
+Path(os.environ["ProgramFiles"])      / "Microsoft/Edge/Application/msedge.exe",
+shutil.which("msedge"),
+```
+
+Nothing else in the codebase is platform-specific. The verifier drives the
+browser with plain Chromium flags (`--headless=old`, `--disable-gpu`,
+`--user-data-dir`, `--no-first-run`) and reads the verdict back over local
+HTTP, so **Chrome, Chromium, Brave and Edge on any of the three platforms would
+work unchanged.** The constraint is the lookup table, not the design.
+
+### What has to change
+
+Replace `find_edge()` with a `find_browser()` that searches a per-platform
+candidate list, keeping `ROCTO_EDGE_BIN` working and adding a clearer
+`ROCTO_BROWSER_BIN`. Candidates, in order — Edge first on Windows because that
+is the combination proven in KI-001, Chrome first elsewhere because it is more
+commonly present:
+
+| Platform | Candidates |
+| --- | --- |
+| Windows | Edge (both Program Files roots), Chrome, Chromium, Brave; `PATH`: `msedge`, `chrome`, `chromium`, `brave` |
+| macOS | `/Applications/{Google Chrome,Microsoft Edge,Chromium,Brave Browser}.app/Contents/MacOS/…`, then the same under `~/Applications` |
+| Linux | `PATH`: `google-chrome`, `google-chrome-stable`, `chromium`, `chromium-browser`, `microsoft-edge`, `microsoft-edge-stable`, `brave-browser` |
+
+`rocto doctor` must then report which browser was found and, when none is,
+print the install command for the host platform instead of a bare "not found".
+
+### Acceptance criteria
+
+1. `find_browser()` returns a real executable on Windows, macOS and Linux when
+   any supported browser is installed, and `None` when none is.
+2. Discovery is unit-tested per platform with a faked filesystem and `PATH` —
+   no test may require a browser to be installed.
+3. `ROCTO_BROWSER_BIN` overrides everything; `ROCTO_EDGE_BIN` keeps working and
+   is documented as the older name.
+4. `rocto doctor` names the browser and its path, or prints a per-platform
+   install hint.
+5. `test_real_edge_interaction_and_screenshot` becomes
+   `test_real_browser_interaction_and_screenshot`, skipping when no browser is
+   found rather than when Edge specifically is missing.
+6. The full suite passes on Linux, and the browser test actually runs there
+   once Chromium is installed.
+7. README's Requirements and Portability sections stop saying Windows-only.
+
+### Constraints
+
+- **No new runtime dependency.** `dependencies = []` is load-bearing: it is why
+  the install story is one `pip install` with nothing to compile. Playwright,
+  Selenium and webdriver-manager are all out.
+- **Do not change the verification protocol.** The harness injection, the local
+  HTTP server, the `POST /__rocto_result` verdict channel and the two-staging
+  screenshot isolation are all fixed by KI-003 and KI-005 and must not be
+  touched. This change is discovery only: which executable to launch.
+- **Keep `--headless=old`.** `--headless=new` is what crashed in KI-001. If a
+  non-Edge browser needs different flags, add them per-browser rather than
+  changing the default for everyone.
+
+---
+
 ## ADR-001 — v0.1 can generate the site with a single DeepSeek call
 
 > **Partly superseded by ADR-002.** The default is now `auto` (router), not
@@ -417,3 +495,34 @@ four contract files, `.rocto/`, or a verifier artifact is deleted and recorded
 in the execution log. Success is then decided by what is on disk — an agent
 that exits 0 without writing the files is a failure (this is exactly the KI-002
 signature).
+
+---
+
+## ADR-003 — The chat-completions endpoint is configuration
+
+**Decision.** The planner and the DeepSeek executor resolve their endpoint and
+key through `provider.py`: `ROCTO_API_BASE` and `ROCTO_API_KEY`, falling back to
+`DEEPSEEK_API_KEY` and to DeepSeek's URL. Any OpenAI-compatible
+`/chat/completions` endpoint works — OpenAI, OpenRouter, Moonshot, a local
+Ollama.
+
+**Why.** Pinning the URL made a DeepSeek account mandatory for *every* user,
+including one who already holds a Claude subscription, has Claude Code signed
+in, and only needs something to write the task specification. It is also a real
+barrier outside China, where DeepSeek billing is harder to reach. Nothing in
+either request is DeepSeek-specific: both are plain `/chat/completions` calls
+with `response_format: json_object`.
+
+**Why DeepSeek stays the default.** It is cheap, it honours `json_object`, and
+crucially it does **not** draw on a Claude or ChatGPT subscription quota — which
+is the point of the whole project. A user who sets nothing keeps the behaviour
+they had.
+
+**Cost.** Providers vary in how well they honour `json_object`. A provider that
+ignores it fails at the planner's JSON parse — loudly, before any code is
+written, with the endpoint named in the error. That is an acceptable failure
+mode; silently accepting a malformed specification would not be.
+
+**Not done.** The model name is still resolved separately (`--model`,
+`ROCTO_DEEPSEEK_MODEL`), so pointing at another provider means setting both.
+Worth unifying once there is evidence anyone is doing it.

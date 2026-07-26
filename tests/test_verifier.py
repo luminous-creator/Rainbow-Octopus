@@ -1,9 +1,28 @@
 from pathlib import Path
+import os
 import tempfile
 import unittest
 
 from rainbow_octopus.verifier import BrowserVerifier, find_edge
 from tests.helpers import sample_spec, write_sample_site
+
+
+def browser_test_reason() -> str | None:
+    """Why the live browser test cannot run here, or None if it can.
+
+    `ROCTO_SKIP_BROWSER_TESTS=1` exists for coding agents. An agent that runs
+    this suite inside its own sandbox can usually see the Edge binary but
+    cannot actually launch it, so the test hangs until the timeout and the
+    agent concludes the project is broken. That has now happened twice — once
+    with file writes (KI-002) and once with the browser — and both times the
+    real code was fine and the sandbox was the constraint. Set the variable and
+    the test is skipped honestly instead of failing misleadingly.
+    """
+    if os.environ.get("ROCTO_SKIP_BROWSER_TESTS") == "1":
+        return "ROCTO_SKIP_BROWSER_TESTS=1 (agent sandbox: cannot launch a browser)"
+    if not find_edge():
+        return "Microsoft Edge is not installed on this host"
+    return None
 
 
 class VerifierTests(unittest.TestCase):
@@ -44,7 +63,7 @@ class VerifierTests(unittest.TestCase):
         self.assertFalse(contract.passed)
         self.assertIn("increment", contract.detail)
 
-    @unittest.skipUnless(find_edge(), "Microsoft Edge is not installed on this host")
+    @unittest.skipIf(browser_test_reason(), browser_test_reason() or "")
     def test_real_edge_interaction_and_screenshot(self):
         """The one test that proves the whole interaction loop.
 

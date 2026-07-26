@@ -14,6 +14,13 @@ from .executor import (
     find_codex,
     is_app_bundled_codex,
 )
+from .provider import (
+    API_KEY_ENV,
+    LEGACY_API_KEY_ENV,
+    is_default_provider,
+    resolve_api_key,
+    resolve_base_url,
+)
 from .verifier import find_edge
 
 
@@ -49,13 +56,17 @@ def _backend_checks() -> list[DoctorCheck]:
 
 
 def run_doctor() -> list[DoctorCheck]:
-    key = os.environ.get("DEEPSEEK_API_KEY")
+    key = resolve_api_key()
+    base_url = resolve_base_url()
+    where = "DeepSeek (default)" if is_default_provider(base_url) else base_url
     checks = [
         DoctorCheck("python", sys.version_info >= (3, 10), platform.python_version()),
         DoctorCheck(
-            "deepseek_key",
+            "planner_api",
             bool(key),
-            "configured" if key else "DEEPSEEK_API_KEY is not set",
+            f"key configured, endpoint {where}"
+            if key
+            else f"set {API_KEY_ENV} or {LEGACY_API_KEY_ENV}",
         ),
     ]
 

@@ -3,12 +3,17 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 import json
-import os
 import urllib.error
 import urllib.request
 
 from .contract import ContractReport, check_contract
 from .models import SpecValidationError, TaskSpec
+from .provider import (
+    completions_url,
+    missing_key_message,
+    resolve_api_key,
+    resolve_base_url,
+)
 
 
 class PlanningError(RuntimeError):
@@ -27,7 +32,11 @@ def _urlopen_transport(
 
 
 class DeepSeekPlanner:
-    API_URL = "https://api.deepseek.com/chat/completions"
+    """Plans against any OpenAI-compatible `/chat/completions` endpoint.
+
+    Named for its default provider, not for a dependency on one — see
+    `provider.py` for how the endpoint and key are resolved.
+    """
 
     def __init__(
         self,
@@ -36,8 +45,11 @@ class DeepSeekPlanner:
         timeout: float = 90,
         transport: Transport = _urlopen_transport,
         max_attempts: int = 3,
+        base_url: str | None = None,
     ):
-        self.api_key = api_key or os.environ.get("DEEPSEEK_API_KEY")
+        self.base_url = resolve_base_url(base_url)
+        self.api_url = completions_url(self.base_url)
+        self.api_key = resolve_api_key(api_key)
         self.model = model
         self.timeout = timeout
         self.transport = transport
@@ -60,7 +72,7 @@ class DeepSeekPlanner:
         the requested feature, so the same repair loop now applies here.
         """
         if not self.api_key:
-            raise PlanningError("DEEPSEEK_API_KEY is not set")
+            raise PlanningError(missing_key_message())
 
         feedback: str | None = None
         last_problem = "unknown"
@@ -88,11 +100,13 @@ class DeepSeekPlanner:
             return None, None, f"the specification was rejected as invalid: {exc}"
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise PlanningError(f"DeepSeek HTTP {exc.code}: {detail}") from exc
+            raise PlanningError(f"{self.base_url} HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
-            raise PlanningError(f"Cannot reach DeepSeek: {exc.reason}") from exc
+            raise PlanningError(f"Cannot reach {self.base_url}: {exc.reason}") from exc
         except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise PlanningError(f"DeepSeek returned an invalid response: {exc}") from exc
+            raise PlanningError(
+                f"{self.base_url} returned an invalid response: {exc}"
+            ) from exc
 
         report = check_contract(spec)
         if not report.ok:
@@ -118,7 +132,7 @@ class DeepSeekPlanner:
             "Content-Type": "application/json",
             "User-Agent": "rainbow-octopus/0.1.0",
         }
-        raw = self.transport(self.API_URL, headers, body, self.timeout)
+        raw = self.transport(self.api_url, headers, body, self.timeout)
         response = json.loads(raw.decode("utf-8"))
         return response["choices"][0]["message"]["content"]
 
