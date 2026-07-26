@@ -136,6 +136,11 @@ class BrowserDiscoveryTests(unittest.TestCase):
                     return_value=home,
                 ),
                 mock.patch(
+                    "rainbow_octopus.verifier.Path.is_file",
+                    autospec=True,
+                    side_effect=lambda path: path == chrome,
+                ),
+                mock.patch(
                     "rainbow_octopus.verifier.shutil.which",
                     return_value=None,
                 ),

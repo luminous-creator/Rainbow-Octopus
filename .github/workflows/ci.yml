@@ -58,7 +58,7 @@ jobs:
           status=$?
           printf '%s\n' "$output"
           if [ "$status" -ne 0 ]; then
-            failure_tail="$(printf '%s\n' "$output" | tail -n 45)"
+            failure_tail="$(printf '%s\n' "$output" | tail -n 22)"
             failure_tail="${failure_tail//'%'/'%25'}"
             failure_tail="${failure_tail//$'\n'/'%0A'}"
             failure_tail="${failure_tail//$'\r'/'%0D'}"
