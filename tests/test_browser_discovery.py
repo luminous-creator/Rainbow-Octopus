@@ -97,77 +97,107 @@ class BrowserDiscoveryTests(unittest.TestCase):
                 edge.unlink()
                 self.assertEqual(find_browser(), chrome)
 
-    def test_windows_can_find_a_browser_on_fake_path(self):
-        with tempfile.TemporaryDirectory() as temp_name:
-            brave = touch(Path(temp_name) / "brave.exe")
-            found = {"brave": str(brave)}
-            with (
-                mock.patch.dict(os.environ, {}, clear=True),
-                mock.patch(
-                    "rainbow_octopus.verifier.platform.system",
-                    return_value="Windows",
-                ),
-                mock.patch(
-                    "rainbow_octopus.verifier.shutil.which",
-                    side_effect=lambda name: found.get(name),
-                ),
-            ):
-                self.assertEqual(find_browser(), brave)
-
-    def test_macos_searches_user_applications_after_system_applications(self):
-        with tempfile.TemporaryDirectory() as temp_name:
-            home = Path(temp_name)
-            chrome = touch(
-                home
-                / "Applications"
-                / "Google Chrome.app"
-                / "Contents"
-                / "MacOS"
-                / "Google Chrome"
-            )
-            with (
-                mock.patch.dict(os.environ, {}, clear=True),
-                mock.patch(
-                    "rainbow_octopus.verifier.platform.system",
-                    return_value="Darwin",
-                ),
-                mock.patch(
-                    "rainbow_octopus.verifier.Path.home",
-                    return_value=home,
-                ),
-                mock.patch(
-                    "rainbow_octopus.verifier.Path.is_file",
-                    autospec=True,
-                    side_effect=lambda path: path == chrome,
-                ),
-                mock.patch(
-                    "rainbow_octopus.verifier.shutil.which",
-                    return_value=None,
-                ),
-            ):
-                self.assertEqual(find_browser(), chrome)
-
-    def test_linux_uses_documented_path_priority(self):
+    def test_windows_supports_each_documented_path_name(self):
         with tempfile.TemporaryDirectory() as temp_name:
             root = Path(temp_name)
-            chromium = touch(root / "chromium")
-            edge = touch(root / "microsoft-edge")
-            found = {
-                "chromium": str(chromium),
-                "microsoft-edge": str(edge),
-            }
-            with (
-                mock.patch.dict(os.environ, {}, clear=True),
-                mock.patch(
-                    "rainbow_octopus.verifier.platform.system",
-                    return_value="Linux",
-                ),
-                mock.patch(
-                    "rainbow_octopus.verifier.shutil.which",
-                    side_effect=lambda name: found.get(name),
-                ),
-            ):
-                self.assertEqual(find_browser(), chromium)
+            for executable in ("msedge", "chrome", "chromium", "brave"):
+                with self.subTest(executable=executable):
+                    browser = touch(root / f"{executable}.exe")
+                    with (
+                        mock.patch.dict(os.environ, {}, clear=True),
+                        mock.patch(
+                            "rainbow_octopus.verifier.platform.system",
+                            return_value="Windows",
+                        ),
+                        mock.patch(
+                            "rainbow_octopus.verifier.Path.is_file",
+                            autospec=True,
+                            side_effect=lambda path, target=browser: path == target,
+                        ),
+                        mock.patch(
+                            "rainbow_octopus.verifier.shutil.which",
+                            side_effect=lambda name, expected=executable, target=browser: (
+                                str(target) if name == expected else None
+                            ),
+                        ),
+                    ):
+                        self.assertEqual(find_browser(), browser)
+
+    def test_macos_supports_each_documented_user_application(self):
+        with tempfile.TemporaryDirectory() as temp_name:
+            home = Path(temp_name)
+            applications = (
+                ("Google Chrome.app", "Google Chrome"),
+                ("Microsoft Edge.app", "Microsoft Edge"),
+                ("Chromium.app", "Chromium"),
+                ("Brave Browser.app", "Brave Browser"),
+            )
+            for app, executable in applications:
+                with self.subTest(app=app):
+                    browser = touch(
+                        home
+                        / "Applications"
+                        / app
+                        / "Contents"
+                        / "MacOS"
+                        / executable
+                    )
+                    with (
+                        mock.patch.dict(os.environ, {}, clear=True),
+                        mock.patch(
+                            "rainbow_octopus.verifier.platform.system",
+                            return_value="Darwin",
+                        ),
+                        mock.patch(
+                            "rainbow_octopus.verifier.Path.home",
+                            return_value=home,
+                        ),
+                        mock.patch(
+                            "rainbow_octopus.verifier.Path.is_file",
+                            autospec=True,
+                            side_effect=lambda path, target=browser: path == target,
+                        ),
+                        mock.patch(
+                            "rainbow_octopus.verifier.shutil.which",
+                            return_value=None,
+                        ),
+                    ):
+                        self.assertEqual(find_browser(), browser)
+
+    def test_linux_supports_each_documented_path_name(self):
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = Path(temp_name)
+            path_names = (
+                "google-chrome",
+                "google-chrome-stable",
+                "chromium",
+                "chromium-browser",
+                "microsoft-edge",
+                "microsoft-edge-stable",
+                "brave-browser",
+            )
+            for executable in path_names:
+                with self.subTest(executable=executable):
+                    browser = touch(root / executable)
+                    with (
+                        mock.patch.dict(os.environ, {}, clear=True),
+                        mock.patch(
+                            "rainbow_octopus.verifier.platform.system",
+                            return_value="Linux",
+                        ),
+                        mock.patch(
+                            "rainbow_octopus.verifier.Path.is_file",
+                            autospec=True,
+                            side_effect=lambda path, target=browser: path == target,
+                        ),
+                        mock.patch(
+                            "rainbow_octopus.verifier.shutil.which",
+                            side_effect=lambda name, expected=executable, target=browser: (
+                                str(target) if name == expected else None
+                            ),
+                        ),
+                    ):
+                        self.assertEqual(find_browser(), browser)
 
     def test_returns_none_when_no_candidate_exists_on_each_platform(self):
         for system in ("Windows", "Darwin", "Linux"):
