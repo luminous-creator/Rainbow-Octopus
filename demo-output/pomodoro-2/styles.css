@@ -1,0 +1,109 @@
+:root {
+  color-scheme: light dark;
+  --ink: #163d36;
+  --ink-soft: #38625a;
+  --paper: #f4f7f1;
+  --surface: #ffffff;
+  --line: #dce5dc;
+  --accent: #d55d43;
+  --accent-deep: #af432d;
+  --shadow: 0 22px 55px rgb(31 72 63 / 0.12);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  min-width: 320px;
+  min-height: 100dvh;
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: ui-rounded, "Avenir Next", Avenir, "Segoe UI", sans-serif;
+}
+
+button { font: inherit; }
+
+button:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 60%, white);
+  outline-offset: 3px;
+}
+
+.app-shell {
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  padding: 28px 18px;
+  background: radial-gradient(circle at 8% 12%, rgb(213 93 67 / 0.11), transparent 27rem), radial-gradient(circle at 92% 87%, rgb(50 117 96 / 0.13), transparent 28rem), var(--paper);
+}
+
+.timer-card {
+  width: min(100%, 520px);
+  padding: clamp(28px, 7vw, 48px);
+  border: 1px solid rgb(255 255 255 / 0.8);
+  border-radius: 22px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  transition: border-color 300ms ease, box-shadow 300ms ease;
+}
+
+.timer-card.is-break { border-color: color-mix(in srgb, var(--ink-soft) 28%, white); }
+.timer-card.is-transitioning { box-shadow: 0 22px 60px rgb(213 93 67 / 0.22); }
+.timer-card.is-break.is-transitioning { box-shadow: 0 22px 60px rgb(56 98 90 / 0.22); }
+
+.brand-row { display: flex; align-items: center; gap: 10px; }
+.brand-name, .eyebrow, .harvest-label, .clock-caption, .progress-label { margin: 0; }
+.brand-name { font-size: 0.92rem; font-weight: 760; letter-spacing: -0.02em; }
+
+.brand-mark, .tomato-icon { position: relative; flex: 0 0 auto; border-radius: 50%; background: var(--accent); }
+.brand-mark { width: 18px; height: 18px; }
+.brand-mark::before, .tomato-icon::before { content: ""; position: absolute; width: 8px; height: 5px; background: var(--ink-soft); border-radius: 8px 2px 8px 2px; transform: rotate(-35deg); }
+.brand-mark::before { top: -3px; left: 7px; }
+.brand-mark span, .tomato-icon span { position: absolute; top: 2px; left: 4px; width: 5px; height: 5px; border-radius: 50%; background: rgb(255 255 255 / 0.58); }
+
+.session-heading { margin-top: clamp(40px, 8vw, 68px); }
+.eyebrow { color: var(--ink-soft); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; }
+h1 { margin: 8px 0 8px; font-size: clamp(2.2rem, 8vw, 3.7rem); line-height: 1; letter-spacing: -0.065em; }
+.session-heading > p:last-child { max-width: 28ch; color: var(--ink-soft); font-size: 0.96rem; line-height: 1.5; }
+
+.clock-wrap { display: grid; place-items: center; padding: clamp(32px, 8vw, 50px) 0 28px; }
+.clock { display: grid; width: min(68vw, 282px); aspect-ratio: 1; place-content: center; text-align: center; border: 12px solid color-mix(in srgb, var(--accent) 14%, white); border-radius: 50%; background: color-mix(in srgb, var(--accent) 4%, white); }
+time { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: clamp(3rem, 13vw, 5.35rem); font-weight: 760; letter-spacing: -0.1em; line-height: 0.9; font-variant-numeric: tabular-nums; }
+.clock-caption { margin-top: 12px; color: var(--ink-soft); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.13em; text-transform: uppercase; }
+
+.progress-region { display: grid; gap: 9px; }
+.progress-track { height: 8px; overflow: hidden; border-radius: 999px; background: #e7eee7; }
+.progress-fill { display: block; width: 0%; height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms linear, background-color 250ms ease; }
+.progress-label { color: var(--ink-soft); font-size: 0.82rem; font-weight: 650; text-align: right; }
+
+.controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 29px; }
+.button { min-height: 49px; border: 0; border-radius: 13px; cursor: pointer; font-weight: 780; transition: transform 160ms ease, background-color 160ms ease, color 160ms ease, opacity 160ms ease; }
+.button:active:not(:disabled) { transform: translateY(1px) scale(0.99); }
+.button:disabled { cursor: not-allowed; opacity: 0.45; }
+.button-primary { background: var(--accent); color: white; }
+.button-primary:hover:not(:disabled) { background: var(--accent-deep); }
+.button-secondary { background: var(--ink); color: white; }
+.button-secondary:hover:not(:disabled) { background: #0e2d27; }
+.button-quiet { grid-column: 1 / -1; background: transparent; color: var(--ink-soft); }
+.button-quiet:hover { background: #edf3ed; color: var(--ink); }
+
+.harvest { display: flex; align-items: center; gap: 15px; margin-top: 30px; padding-top: 23px; border-top: 1px solid var(--line); }
+.tomato-icon { width: 32px; height: 32px; }
+.tomato-icon::before { top: -4px; left: 13px; width: 13px; height: 7px; }
+.tomato-icon span { top: 6px; left: 8px; width: 9px; height: 9px; }
+.harvest-label { color: var(--ink-soft); font-size: 0.76rem; font-weight: 750; letter-spacing: 0.04em; }
+.harvest-count { margin: 4px 0 0; font-size: 0.95rem; font-weight: 720; }
+[data-testid="tomato-count"] { color: var(--accent-deep); font-size: 1.14rem; }
+
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+@media (prefers-color-scheme: dark) {
+  :root { --ink: #e6f0e9; --ink-soft: #abc3b4; --paper: #102a25; --surface: #16352f; --line: #31544b; --accent: #e1785d; --accent-deep: #f09278; --shadow: 0 22px 55px rgb(0 0 0 / 0.25); }
+  .timer-card { border-color: #31544b; }
+  .clock { border-color: rgb(225 120 93 / 0.2); background: rgb(225 120 93 / 0.08); }
+  .progress-track { background: #294940; }
+  .button-quiet:hover { background: #20453b; }
+  button:focus-visible { outline-color: #f2a08b; }
+}
+
+@media (max-width: 390px) { .timer-card { padding: 27px 23px; } .controls { grid-template-columns: 1fr; } .button-quiet { grid-column: auto; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; } }

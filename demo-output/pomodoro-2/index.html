@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#163d36" />
+    <title>Pomodoro Timer</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell" aria-labelledby="page-title">
+      <section class="timer-card" aria-describedby="timer-description">
+        <div class="brand-row">
+          <div class="brand-mark" aria-hidden="true"><span></span></div>
+          <p class="brand-name">focus garden</p>
+        </div>
+
+        <div class="session-heading">
+          <p class="eyebrow">Current session</p>
+          <h1 id="page-title" data-testid="session-type" aria-live="polite">Work</h1>
+          <p id="timer-description">One small, uninterrupted block at a time.</p>
+        </div>
+
+        <div class="clock-wrap">
+          <div class="clock" aria-label="Remaining time">
+            <time data-testid="pomodoro-timer" datetime="PT25M" aria-live="polite">25:00</time>
+            <span class="clock-caption">remaining</span>
+          </div>
+        </div>
+
+        <div class="progress-region" aria-label="Session progress">
+          <div class="progress-track" data-testid="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <span class="progress-fill"></span>
+          </div>
+          <span class="progress-label">0% complete</span>
+        </div>
+
+        <div class="controls" aria-label="Timer controls">
+          <button type="button" class="button button-primary" data-testid="start-button">Start</button>
+          <button type="button" class="button button-secondary" data-testid="pause-button" disabled>Pause</button>
+          <button type="button" class="button button-quiet" data-testid="reset-button">Reset</button>
+        </div>
+
+        <aside class="harvest" aria-label="Completed work sessions">
+          <div class="tomato-icon" aria-hidden="true"><span></span></div>
+          <div>
+            <p class="harvest-label">Today&rsquo;s harvest</p>
+            <p class="harvest-count"><span data-testid="tomato-count" aria-live="polite">0</span> tomato<span class="plural">es</span> completed</p>
+          </div>
+        </aside>
+
+        <p class="sr-only" role="status" aria-live="polite"></p>
+      </section>
+    </main>
+    <script src="script.js"></script>
+  </body>
+</html>

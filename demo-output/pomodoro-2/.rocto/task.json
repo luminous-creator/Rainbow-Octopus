@@ -1,0 +1,259 @@
+{
+  "title": "Pomodoro Timer with Stats",
+  "goal": "Build a functional Pomodoro timer that tracks completed work sessions (tomatoes) and displays the count.",
+  "features": [
+    "Displays remaining time in mm:ss format for both work and break intervals",
+    "Start, pause, and reset timer controls",
+    "Alternates between 25-minute work and 5-minute break sessions",
+    "Increments a tomato count each time a work session completes",
+    "Shows current session type (Work/Break) via status label",
+    "Visual feedback (e.g., color change) when transitioning between sessions",
+    "Responsive layout that works on desktop and mobile",
+    "All state is managed in-memory (no persistence needed)"
+  ],
+  "constraints": [
+    "No external libraries, CDNs, or network requests",
+    "All styling via vanilla CSS (no preprocessors)",
+    "No build step or package manager",
+    "All user interaction must be accessible via keyboard (tabindex, buttons)",
+    "Create only a static HTML/CSS/JavaScript website",
+    "Do not use external dependencies, CDNs, or network requests",
+    "Create index.html, styles.css, script.js, and README.md"
+  ],
+  "ui_contract": [
+    {
+      "test_id": "pomodoro-timer",
+      "purpose": "Main timer display showing mm:ss"
+    },
+    {
+      "test_id": "start-button",
+      "purpose": "Button to start the timer"
+    },
+    {
+      "test_id": "pause-button",
+      "purpose": "Button to pause the timer"
+    },
+    {
+      "test_id": "reset-button",
+      "purpose": "Button to reset the timer to initial work state"
+    },
+    {
+      "test_id": "session-type",
+      "purpose": "Label indicating current session type (Work/Break)"
+    },
+    {
+      "test_id": "tomato-count",
+      "purpose": "Display of completed work sessions count"
+    },
+    {
+      "test_id": "progress-bar",
+      "purpose": "Visual progress indicator (percentage of current session)"
+    }
+  ],
+  "tests": [
+    {
+      "name": "Initial state",
+      "steps": [
+        {
+          "action": "selector_exists",
+          "selector": "[data-testid=\"pomodoro-timer\"]",
+          "value": null,
+          "expected": null,
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "text_visible",
+          "selector": "[data-testid=\"pomodoro-timer\"]",
+          "value": null,
+          "expected": "25:00",
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "text_visible",
+          "selector": "[data-testid=\"session-type\"]",
+          "value": null,
+          "expected": "Work",
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "text_visible",
+          "selector": "[data-testid=\"tomato-count\"]",
+          "value": null,
+          "expected": "0",
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "no_console_errors",
+          "selector": null,
+          "value": null,
+          "expected": null,
+          "attribute": null,
+          "timeout_ms": 1000
+        }
+      ]
+    },
+    {
+      "name": "Start and pause timer",
+      "steps": [
+        {
+          "action": "click",
+          "selector": "[data-testid=\"start-button\"]",
+          "value": null,
+          "expected": null,
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "wait",
+          "selector": null,
+          "value": null,
+          "expected": null,
+          "attribute": null,
+          "timeout_ms": 2000
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid=\"pause-button\"]",
+          "value": null,
+          "expected": null,
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "text_visible",
+          "selector": "[data-testid=\"pomodoro-timer\"]",
+          "value": null,
+          "expected": "24:58",
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "no_console_errors",
+          "selector": null,
+          "value": null,
+          "expected": null,
+          "attribute": null,
+          "timeout_ms": 1000
+        }
+      ]
+    },
+    {
+      "name": "Reset timer",
+      "steps": [
+        {
+          "action": "click",
+          "selector": "[data-testid=\"start-button\"]",
+          "value": null,
+          "expected": null,
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "wait",
+          "selector": null,
+          "value": null,
+          "expected": null,
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid=\"reset-button\"]",
+          "value": null,
+          "expected": null,
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "text_visible",
+          "selector": "[data-testid=\"pomodoro-timer\"]",
+          "value": null,
+          "expected": "25:00",
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "text_visible",
+          "selector": "[data-testid=\"session-type\"]",
+          "value": null,
+          "expected": "Work",
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "text_visible",
+          "selector": "[data-testid=\"tomato-count\"]",
+          "value": null,
+          "expected": "0",
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "no_console_errors",
+          "selector": null,
+          "value": null,
+          "expected": null,
+          "attribute": null,
+          "timeout_ms": 1000
+        }
+      ]
+    },
+    {
+      "name": "Complete a work session and increment count",
+      "steps": [
+        {
+          "action": "click",
+          "selector": "[data-testid=\"reset-button\"]",
+          "value": null,
+          "expected": null,
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid=\"start-button\"]",
+          "value": null,
+          "expected": null,
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "wait",
+          "selector": null,
+          "value": null,
+          "expected": null,
+          "attribute": null,
+          "timeout_ms": 1500
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid=\"pause-button\"]",
+          "value": null,
+          "expected": null,
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "text_visible",
+          "selector": "[data-testid=\"pomodoro-timer\"]",
+          "value": null,
+          "expected": "24:58",
+          "attribute": null,
+          "timeout_ms": 1000
+        },
+        {
+          "action": "no_console_errors",
+          "selector": null,
+          "value": null,
+          "expected": null,
+          "attribute": null,
+          "timeout_ms": 1000
+        }
+      ]
+    }
+  ]
+}

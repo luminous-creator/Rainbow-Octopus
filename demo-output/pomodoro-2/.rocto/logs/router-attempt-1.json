@@ -1,0 +1,6 @@
+{
+  "winner": "codex",
+  "skipped_or_failed": [
+    "claude: Claude Code exited with 1: Failed to authenticate. API Error: 403 Request not allowed"
+  ]
+}

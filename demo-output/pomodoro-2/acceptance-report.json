@@ -1,0 +1,162 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "name": "required_file:index.html",
+      "passed": true,
+      "detail": "present"
+    },
+    {
+      "name": "required_file:styles.css",
+      "passed": true,
+      "detail": "present"
+    },
+    {
+      "name": "required_file:script.js",
+      "passed": true,
+      "detail": "present"
+    },
+    {
+      "name": "required_file:README.md",
+      "passed": true,
+      "detail": "present"
+    },
+    {
+      "name": "offline_only",
+      "passed": true,
+      "detail": "no external access detected"
+    },
+    {
+      "name": "testid_contract",
+      "passed": true,
+      "detail": "all declared data-testid values are present"
+    },
+    {
+      "name": "browser_run",
+      "passed": true,
+      "detail": "completed"
+    },
+    {
+      "name": "Initial state:selector_exists",
+      "passed": true,
+      "detail": "[data-testid=\"pomodoro-timer\"]"
+    },
+    {
+      "name": "Initial state:text_visible",
+      "passed": true,
+      "detail": "expected=25:00; actual=25:00"
+    },
+    {
+      "name": "Initial state:text_visible",
+      "passed": true,
+      "detail": "expected=Work; actual=Work"
+    },
+    {
+      "name": "Initial state:text_visible",
+      "passed": true,
+      "detail": "expected=0; actual=0"
+    },
+    {
+      "name": "Initial state:no_console_errors",
+      "passed": true,
+      "detail": "none"
+    },
+    {
+      "name": "Start and pause timer:click",
+      "passed": true,
+      "detail": "[data-testid=\"start-button\"]"
+    },
+    {
+      "name": "Start and pause timer:wait",
+      "passed": true,
+      "detail": "2000"
+    },
+    {
+      "name": "Start and pause timer:click",
+      "passed": true,
+      "detail": "[data-testid=\"pause-button\"]"
+    },
+    {
+      "name": "Start and pause timer:text_visible",
+      "passed": true,
+      "detail": "expected=24:58; actual=24:58"
+    },
+    {
+      "name": "Start and pause timer:no_console_errors",
+      "passed": true,
+      "detail": "none"
+    },
+    {
+      "name": "Reset timer:click",
+      "passed": true,
+      "detail": "[data-testid=\"start-button\"]"
+    },
+    {
+      "name": "Reset timer:wait",
+      "passed": true,
+      "detail": "1000"
+    },
+    {
+      "name": "Reset timer:click",
+      "passed": true,
+      "detail": "[data-testid=\"reset-button\"]"
+    },
+    {
+      "name": "Reset timer:text_visible",
+      "passed": true,
+      "detail": "expected=25:00; actual=25:00"
+    },
+    {
+      "name": "Reset timer:text_visible",
+      "passed": true,
+      "detail": "expected=Work; actual=Work"
+    },
+    {
+      "name": "Reset timer:text_visible",
+      "passed": true,
+      "detail": "expected=0; actual=0"
+    },
+    {
+      "name": "Reset timer:no_console_errors",
+      "passed": true,
+      "detail": "none"
+    },
+    {
+      "name": "Complete a work session and increment count:click",
+      "passed": true,
+      "detail": "[data-testid=\"reset-button\"]"
+    },
+    {
+      "name": "Complete a work session and increment count:click",
+      "passed": true,
+      "detail": "[data-testid=\"start-button\"]"
+    },
+    {
+      "name": "Complete a work session and increment count:wait",
+      "passed": true,
+      "detail": "1500"
+    },
+    {
+      "name": "Complete a work session and increment count:click",
+      "passed": true,
+      "detail": "[data-testid=\"pause-button\"]"
+    },
+    {
+      "name": "Complete a work session and increment count:text_visible",
+      "passed": true,
+      "detail": "expected=24:58; actual=24:58"
+    },
+    {
+      "name": "Complete a work session and increment count:no_console_errors",
+      "passed": true,
+      "detail": "none"
+    },
+    {
+      "name": "screenshot",
+      "passed": true,
+      "detail": "screenshot.png created"
+    }
+  ],
+  "console_errors": [],
+  "screenshot": "screenshot.png"
+}

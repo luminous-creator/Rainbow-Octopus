@@ -1,0 +1,39 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.coverage
+.pytest_cache/
+.venv*/
+venv/
+build/
+dist/
+.env
+.rocto/
+benchmark-runs/
+work/
+
+# Session transcript backup: full conversation history, never publish.
+_cowork-backup/
+
+# Local agent workspace (worktrees, settings).
+.claude/
+
+# Planning notes and drafts. These are working documents, not part of the
+# tool: internal decision logs, self-review, and the separate competition
+# project. They stay on disk; they do not go in the repository.
+DECISIONS.md
+NEXT-STEPS.md
+CODEX-BRIEF.md
+EXPERIMENT-01-headless.md
+RAINBOW-OCTOPUS-v0.1-评审.md
+项目决策记录.md
+XINGCHEN-WORKFLOW.md
+xingchen-code-node.py
+
+# Demo output is throwaway, with one exception: pomodoro-2 is the first build
+# that passed the full pipeline on real hardware, and it is kept as evidence.
+demo-output/*
+!demo-output/pomodoro-2/
+!demo-output/pomodoro-2/.rocto/
+# The Codex transcripts are 650 KB and contain local Windows paths.
+demo-output/pomodoro-2/.rocto/logs/codex-attempt-*.json
