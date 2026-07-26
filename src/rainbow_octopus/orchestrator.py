@@ -121,7 +121,7 @@ class Orchestrator:
 
             state.transition("verifying", f"Verification after attempt {attempt}")
             store.save(state)
-            self._emit("verifying", "checking files, contract, then driving Edge")
+            self._emit("verifying", "checking files, contract, then driving a browser")
             report = self.verifier.verify(project_dir, spec)
             write_json_atomic(project_dir / "acceptance-report.json", report.to_dict())
             last_report = report
@@ -180,4 +180,3 @@ def default_orchestrator(
         max_retries=max_retries,
         on_event=on_event,
     )
-

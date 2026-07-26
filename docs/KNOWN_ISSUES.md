@@ -351,11 +351,25 @@ assertion, and either a tested `progress-bar` or none declared.
 
 ---
 
-## KI-008 — Verification is Windows-only — **OPEN**
+## KI-008 — Verification is Windows-only — **FIXED**
 
 - **Observed:** 2026-07-26
+- **Fixed:** 2026-07-26
 - **Impact:** adoption. Every other part of the tool is portable; this one
   function is why the README has to say "Windows 11" on the first line.
+
+### Resolution
+
+`find_browser()` now uses a per-platform candidate list for Chrome, Chromium,
+Brave and Edge. Windows retains Edge-first ordering; macOS searches system and
+user Applications folders; Linux checks the conventional executable names on
+`PATH`. `ROCTO_BROWSER_BIN` is the preferred override and the older
+`ROCTO_EDGE_BIN` name remains compatible.
+
+`rocto doctor` reports the browser name and path and supplies a platform-specific
+install command when none is found. Discovery is covered with fake filesystems
+and fake `PATH` results for all three platforms, without adding a runtime
+dependency or changing the local-HTTP verification protocol.
 
 ### Symptom
 

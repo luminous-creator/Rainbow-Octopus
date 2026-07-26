@@ -22,8 +22,8 @@ python -m pip wheel . --no-deps --no-build-isolation -w dist
 ```
 
 - All non-browser tests pass.
-- `VerifierTests.test_real_edge_interaction_and_screenshot` passes on a clean
-  Windows 11 runner.
+- `VerifierTests.test_real_browser_interaction_and_screenshot` passes on a
+  clean host with a supported Chrome, Chromium, Brave or Edge installation.
 - `rocto doctor` passes on the demo machine.
 - One real DeepSeek → Codex → verifier build completes.
 - README URLs and package metadata are final.
@@ -42,4 +42,3 @@ python -m pip install rainbow-octopus==0.1.0
 rocto --version
 rocto doctor
 ```
-

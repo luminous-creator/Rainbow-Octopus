@@ -21,7 +21,7 @@ from .provider import (
     resolve_api_key,
     resolve_base_url,
 )
-from .verifier import find_edge
+from .verifier import browser_install_hint, browser_name, find_browser
 
 
 @dataclass
@@ -89,12 +89,14 @@ def run_doctor() -> list[DoctorCheck]:
         )
     checks.extend(backends)
 
-    edge = find_edge()
+    browser = find_browser()
     checks.append(
         DoctorCheck(
-            "edge",
-            edge is not None,
-            str(edge) if edge else "Microsoft Edge not found",
+            "browser",
+            browser is not None,
+            f"{browser_name(browser)}: {browser}"
+            if browser
+            else f"not found; {browser_install_hint()}",
         )
     )
     return checks

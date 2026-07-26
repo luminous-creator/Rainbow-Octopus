@@ -211,7 +211,10 @@ class InjectionTests(unittest.TestCase):
             project = Path(tmp)
             write_sample_site(project)
             original = (project / "index.html").read_text(encoding="utf-8")
-            verifier = BrowserVerifier(edge_path=None)
+            # This is an injection-isolation test, not a live-browser test.
+            # A missing explicit path makes process launch fail immediately
+            # instead of discovering and waiting on a host browser.
+            verifier = BrowserVerifier(browser_path=Path("/missing/browser"))
             verifier.verify(project, sample_spec())
             self.assertEqual(
                 original, (project / "index.html").read_text(encoding="utf-8")

@@ -9,7 +9,7 @@ Repository: <https://github.com/luminous-creator/Rainbow-Octopus>
 
 <sub>`rocto build "做一个带统计功能的番茄钟网页"` — planned by DeepSeek, written by
 the Codex backend after Claude Code was skipped for being signed out, then driven
-in headless Edge: 31 assertions, [full report](demo-output/pomodoro-2/acceptance-report.json).
+in a headless browser: 31 assertions, [full report](demo-output/pomodoro-2/acceptance-report.json).
 The whole run is kept in [`demo-output/pomodoro-2/`](demo-output/pomodoro-2/),
 including [what that green report failed to catch](docs/KNOWN_ISSUES.md#ki-007--a-passing-contract-that-verified-almost-nothing--fixed).</sub>
 
@@ -18,11 +18,11 @@ observable workflow:
 
 ```text
 idea → DeepSeek task specification → the first available coding agent
-     → deterministic Edge checks → repair (up to two times) → artifacts
+     → deterministic Chromium checks → repair (up to two times) → artifacts
 ```
 
-The first release targets Windows 11 and deliberately supports one task:
-creating a new vanilla HTML/CSS/JavaScript demo in an empty directory.
+The first release runs on Windows, macOS and Linux and deliberately supports
+one task: creating a new vanilla HTML/CSS/JavaScript demo in an empty directory.
 
 ### Try it with no account, no CLI, no browser
 
@@ -45,8 +45,9 @@ installed — the package has no third-party dependencies.
 Using AI for engineering means switching windows, rewriting prompts, watching
 long runs, and manually checking whether the result actually works. Rainbow
 Octopus moves that supervision into a small CLI: DeepSeek defines the observable
-contract, a coding agent builds inside a scoped workspace, and Microsoft Edge
-executes a restricted test plan before the result is accepted.
+contract, a coding agent builds inside a scoped workspace, and a local Chrome,
+Chromium, Brave or Edge executes a restricted test plan before the result is
+accepted.
 
 It also solves a smaller, more annoying problem. If you hold several AI
 subscriptions, one of them is usually unavailable — logged out, rate limited,
@@ -97,7 +98,7 @@ it happens:
 [ 81.2s] plan    7 contract elements, 31 assertions
 [ 81.2s] build   attempt 1/3 — writing the site
 [118.7s] build   site written by deepseek
-[118.7s] verify  checking files, contract, then driving Edge
+[118.7s] verify  checking files, contract, then driving Chromium
 [124.9s] done    12/12 checks passed
 ```
 
@@ -118,9 +119,9 @@ Every run records who was chosen and why the others were passed over in
 
 ## Requirements
 
-- Windows 11 — see [Portability](#portability)
+- Windows 11, macOS or Linux
 - Python 3.10 or newer
-- Microsoft Edge
+- Google Chrome, Chromium, Brave or Microsoft Edge
 - An API key for any OpenAI-compatible chat-completions endpoint, used for
   planning and as the always-available executor. DeepSeek is the default
   because it is cheap and does not spend a Claude or ChatGPT subscription quota
@@ -164,7 +165,11 @@ If a CLI is installed somewhere unusual, point at it directly:
 ```powershell
 $env:ROCTO_CLAUDE_BIN = "C:\path\to\claude.exe"
 $env:ROCTO_CODEX_BIN  = "C:\path\to\codex.exe"
+$env:ROCTO_BROWSER_BIN = "C:\path\to\chrome.exe"
 ```
+
+`ROCTO_BROWSER_BIN` takes priority over automatic browser discovery.
+`ROCTO_EDGE_BIN` remains supported as the older name.
 
 `rocto doctor` reports each backend separately. Lines marked `--` are optional —
 the build only needs one of them:
@@ -176,7 +181,7 @@ the build only needs one of them:
 [OK  ] executor:claude    2.1.219 (Claude Code) (subscription)
 [--  ] executor:codex     Codex CLI not found
 [OK  ] executor:deepseek  deepseek executor ready (model=deepseek-v4-flash)
-[OK  ] edge               C:\Program Files (x86)\Microsoft\Edge\...\msedge.exe
+[OK  ] browser            Microsoft Edge: C:\Program Files (x86)\Microsoft\Edge\...\msedge.exe
 ```
 
 ## Quick start
@@ -334,24 +339,23 @@ v0.1 只生成新的静态网页，不修改已有仓库，不控制 Claude/Chat
 
 ## Portability
 
-Verification launches Microsoft Edge, and `find_edge()` only knows the two
-Windows install paths, so the browser step is Windows-only today. Nothing about
-the approach requires Edge or Windows: the verifier drives a headless Chromium
-with ordinary flags and reads the verdict over local HTTP, which Chrome,
-Chromium, Brave and Edge on macOS and Linux all support equally. Widening
-browser discovery is the next planned change, tracked as KI-008.
+Verification supports Chrome, Chromium, Brave and Edge on Windows, macOS and
+Linux. Windows keeps Edge first because it is the combination proven by KI-001;
+macOS prefers applications under `/Applications` and `~/Applications`; Linux
+uses the conventional browser executable names on `PATH`.
 
-Everything else already runs anywhere: the planner, the router, contract
-checking, the executor boundary rules and `scripts/dry_run.py` are pure Python
-with no platform assumptions, and the full test suite passes on Linux with the
-single browser test skipped.
+Set `ROCTO_BROWSER_BIN` when the browser is installed somewhere unusual.
+`ROCTO_EDGE_BIN` is retained as a legacy alias. If discovery finds nothing,
+`rocto doctor` prints a platform-specific install command. The verifier still
+uses only the Python standard library and the local browser—there is no
+Playwright, Selenium or webdriver dependency.
 
 ## Status
 
-KI-001 through KI-007 are fixed. The live Edge interaction test —
-`VerifierTests.test_real_edge_interaction_and_screenshot`, which launches Edge,
-loads the page, clicks through it, asserts, posts the verdict back and captures
-a screenshot — passes on a real Windows 11 host, and
+KI-001 through KI-008 are fixed. The live browser interaction test —
+`VerifierTests.test_real_browser_interaction_and_screenshot`, which launches a
+discovered browser, loads the page, clicks through it, asserts, posts the
+verdict back and captures a screenshot — passes on a real Windows 11 host, and
 [`demo-output/pomodoro-2/`](demo-output/pomodoro-2/) is a complete build that
 went through that path end to end. Known limits are in
 [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md); nothing is claimed there that

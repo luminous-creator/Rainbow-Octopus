@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterator
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -105,29 +106,193 @@ def strip_comments(text: str) -> str:
     return "".join(out)
 
 
-def find_edge() -> Path | None:
-    explicit = os.environ.get("ROCTO_EDGE_BIN")
-    found = shutil.which("msedge")
-    candidates = [
-        Path(explicit) if explicit else None,
-        Path(os.environ.get("ProgramFiles(x86)", ""))
-        / "Microsoft"
-        / "Edge"
-        / "Application"
-        / "msedge.exe",
-        Path(os.environ.get("ProgramFiles", ""))
-        / "Microsoft"
-        / "Edge"
-        / "Application"
-        / "msedge.exe",
-        Path(found) if found else None,
-    ]
+def _under(root: str | Path | None, *parts: str) -> Path | None:
+    """Build a candidate only when its root is configured."""
+    if not root:
+        return None
+    return Path(root).joinpath(*parts)
+
+
+def _browser_candidates(system: str) -> tuple[list[Path | None], tuple[str, ...]]:
+    """Return fixed-path and PATH candidates in platform priority order."""
+    if system == "Windows":
+        program_files_x86 = os.environ.get("ProgramFiles(x86)")
+        program_files = os.environ.get("ProgramFiles")
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        fixed = [
+            _under(
+                program_files_x86,
+                "Microsoft",
+                "Edge",
+                "Application",
+                "msedge.exe",
+            ),
+            _under(
+                program_files,
+                "Microsoft",
+                "Edge",
+                "Application",
+                "msedge.exe",
+            ),
+            _under(
+                program_files,
+                "Google",
+                "Chrome",
+                "Application",
+                "chrome.exe",
+            ),
+            _under(
+                program_files_x86,
+                "Google",
+                "Chrome",
+                "Application",
+                "chrome.exe",
+            ),
+            _under(
+                local_app_data,
+                "Google",
+                "Chrome",
+                "Application",
+                "chrome.exe",
+            ),
+            _under(
+                program_files,
+                "Chromium",
+                "Application",
+                "chrome.exe",
+            ),
+            _under(
+                program_files_x86,
+                "Chromium",
+                "Application",
+                "chrome.exe",
+            ),
+            _under(
+                local_app_data,
+                "Chromium",
+                "Application",
+                "chrome.exe",
+            ),
+            _under(
+                program_files,
+                "BraveSoftware",
+                "Brave-Browser",
+                "Application",
+                "brave.exe",
+            ),
+            _under(
+                program_files_x86,
+                "BraveSoftware",
+                "Brave-Browser",
+                "Application",
+                "brave.exe",
+            ),
+            _under(
+                local_app_data,
+                "BraveSoftware",
+                "Brave-Browser",
+                "Application",
+                "brave.exe",
+            ),
+        ]
+        return fixed, ("msedge", "chrome", "chromium", "brave")
+
+    if system == "Darwin":
+        applications = (Path("/Applications"), Path.home() / "Applications")
+        app_binaries = (
+            ("Google Chrome.app", "Google Chrome"),
+            ("Microsoft Edge.app", "Microsoft Edge"),
+            ("Chromium.app", "Chromium"),
+            ("Brave Browser.app", "Brave Browser"),
+        )
+        fixed = [
+            root / app / "Contents" / "MacOS" / executable
+            for root in applications
+            for app, executable in app_binaries
+        ]
+        return fixed, ("google-chrome", "chromium", "microsoft-edge", "brave")
+
+    # Linux and other Unix-like hosts use the conventional executable names.
+    return [], (
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "microsoft-edge",
+        "microsoft-edge-stable",
+        "brave-browser",
+    )
+
+
+def find_browser() -> Path | None:
+    """Find a supported Chromium browser on Windows, macOS or Linux.
+
+    ``ROCTO_BROWSER_BIN`` is the preferred explicit override.
+    ``ROCTO_EDGE_BIN`` remains supported as its legacy name.
+    """
+    for variable in ("ROCTO_BROWSER_BIN", "ROCTO_EDGE_BIN"):
+        value = os.environ.get(variable)
+        if value:
+            candidate = Path(value).expanduser()
+            if candidate.is_file():
+                return candidate
+
+    fixed, path_names = _browser_candidates(platform.system())
+    candidates: list[Path | None] = list(fixed)
+    for name in path_names:
+        found = shutil.which(name)
+        candidates.append(Path(found) if found else None)
     return next((path for path in candidates if path and path.is_file()), None)
 
 
+def find_edge() -> Path | None:
+    """Backward-compatible alias for callers using the pre-KI-008 name."""
+    return find_browser()
+
+
+def browser_name(path: Path) -> str:
+    """Return a human-facing name for a discovered executable."""
+    lowered = str(path).lower()
+    if "brave" in lowered:
+        return "Brave"
+    if "msedge" in lowered or "microsoft edge" in lowered:
+        return "Microsoft Edge"
+    if "chromium" in lowered:
+        return "Chromium"
+    if "chrome" in lowered:
+        return "Google Chrome"
+    return "Configured Chromium browser"
+
+
+def browser_install_hint(system: str | None = None) -> str:
+    """Give a practical next step when discovery finds no browser."""
+    host = system or platform.system()
+    if host == "Windows":
+        return "install with: winget install --id Google.Chrome"
+    if host == "Darwin":
+        return "install with: brew install --cask google-chrome"
+    return "install with: sudo apt install chromium-browser (or your distro package)"
+
+
+def _headless_flag(path: Path) -> str:
+    """Keep KI-001's proven Edge mode; use current headless elsewhere."""
+    if browser_name(path) == "Microsoft Edge":
+        return "--headless=old"
+    return "--headless"
+
+
 class BrowserVerifier:
-    def __init__(self, edge_path: Path | None = None, timeout: int = 30):
-        self.edge_path = edge_path or find_edge()
+    def __init__(
+        self,
+        browser_path: Path | None = None,
+        timeout: int = 30,
+        *,
+        edge_path: Path | None = None,
+    ):
+        # edge_path is kept as a keyword-only compatibility bridge for v0.1
+        # callers. New code should use browser_path.
+        self.browser_path = browser_path or edge_path or find_browser()
+        self.edge_path = self.browser_path
         self.timeout = timeout
 
     def verify(self, project_dir: Path, spec: TaskSpec) -> AcceptanceReport:
@@ -176,9 +341,13 @@ class BrowserVerifier:
         )
         if missing_ids:
             return AcceptanceReport(False, checks)
-        if not self.edge_path:
+        if not self.browser_path:
             checks.append(
-                AcceptanceCheck("edge_available", False, "Microsoft Edge not found")
+                AcceptanceCheck(
+                    "browser_available",
+                    False,
+                    f"supported Chromium browser not found; {browser_install_hint()}",
+                )
             )
             return AcceptanceReport(False, checks)
 
@@ -366,10 +535,10 @@ setTimeout(() => __roctoReport([{{
         it arrives. No timing guesswork, no ``--virtual-time-budget``.
         """
         command = [
-            str(self.edge_path),
+            str(self.browser_path),
             # KI-001: --headless=new crashes the GPU process on Windows 11 and
             # then blocks forever. Old headless is stable.
-            "--headless=old",
+            _headless_flag(self.browser_path),
             "--disable-gpu",
             "--disable-gpu-sandbox",
             "--disable-software-rasterizer",
@@ -433,9 +602,9 @@ setTimeout(() => __roctoReport([{{
         self, url: str, screenshot: Path, profile: Path
     ) -> tuple[bool, str]:
         command = [
-            str(self.edge_path),
+            str(self.browser_path),
             # KI-001: see _run_edge_harness — old headless required on Windows 11.
-            "--headless=old",
+            _headless_flag(self.browser_path),
             "--disable-gpu",
             "--disable-gpu-sandbox",
             "--disable-software-rasterizer",

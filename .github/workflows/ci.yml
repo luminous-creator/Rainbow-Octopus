@@ -33,3 +33,23 @@ jobs:
           rocto --version
           rocto --help
 
+  portable-browser:
+    name: Browser loop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Require a discoverable host browser
+        env:
+          PYTHONPATH: src
+        run: python -c "from rainbow_octopus.verifier import find_browser; assert find_browser()"
+      - name: Run the full suite, including the host browser
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests -v

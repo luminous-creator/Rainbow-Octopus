@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 
-from rainbow_octopus.verifier import BrowserVerifier, find_edge
+from rainbow_octopus.verifier import BrowserVerifier, find_browser
 from tests.helpers import sample_spec, write_sample_site
 
 
@@ -20,15 +20,15 @@ def browser_test_reason() -> str | None:
     """
     if os.environ.get("ROCTO_SKIP_BROWSER_TESTS") == "1":
         return "ROCTO_SKIP_BROWSER_TESTS=1 (agent sandbox: cannot launch a browser)"
-    if not find_edge():
-        return "Microsoft Edge is not installed on this host"
+    if not find_browser():
+        return "no supported Chromium browser is installed on this host"
     return None
 
 
 class VerifierTests(unittest.TestCase):
     def test_missing_files_fail_without_browser(self):
         with tempfile.TemporaryDirectory() as temp_name:
-            report = BrowserVerifier(edge_path=Path("missing.exe")).verify(
+            report = BrowserVerifier(browser_path=Path("missing.exe")).verify(
                 Path(temp_name), sample_spec()
             )
         self.assertFalse(report.passed)
@@ -39,7 +39,7 @@ class VerifierTests(unittest.TestCase):
             project = Path(temp_name)
             write_sample_site(project)
             (project / "script.js").write_text("fetch('https://example.com')", encoding="utf-8")
-            report = BrowserVerifier(edge_path=Path("missing.exe")).verify(
+            report = BrowserVerifier(browser_path=Path("missing.exe")).verify(
                 project, sample_spec()
             )
         offline = next(check for check in report.checks if check.name == "offline_only")
@@ -54,7 +54,7 @@ class VerifierTests(unittest.TestCase):
                 html.replace('data-testid="increment"', ""),
                 encoding="utf-8",
             )
-            report = BrowserVerifier(edge_path=Path("missing.exe")).verify(
+            report = BrowserVerifier(browser_path=Path("missing.exe")).verify(
                 project, sample_spec()
             )
         contract = next(
@@ -64,13 +64,13 @@ class VerifierTests(unittest.TestCase):
         self.assertIn("increment", contract.detail)
 
     @unittest.skipIf(browser_test_reason(), browser_test_reason() or "")
-    def test_real_edge_interaction_and_screenshot(self):
+    def test_real_browser_interaction_and_screenshot(self):
         """The one test that proves the whole interaction loop.
 
         Un-skipped now that KI-001 (--headless=old) and KI-003 (harness posts
         its verdict back instead of relying on --dump-dom) are fixed. It runs
-        automatically wherever Edge exists and is skipped elsewhere, so CI on
-        Linux stays green while a Windows host actually exercises it.
+        automatically wherever a supported Chromium browser exists and is
+        skipped only when none can be found.
         """
         with tempfile.TemporaryDirectory() as temp_name:
             project = Path(temp_name)

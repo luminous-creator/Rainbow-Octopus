@@ -192,7 +192,7 @@ def scenario(label: str, executor) -> int:
     orchestrator = Orchestrator(
         planner=make_planner(),
         executor=executor,
-        verifier=BrowserVerifier(edge_path=None),
+        verifier=BrowserVerifier(browser_path=Path("missing-browser")),
         max_retries=0,
     )
     try:
