@@ -18,16 +18,34 @@ _cowork-backup/
 # Local agent workspace (worktrees, settings).
 .claude/
 
-# Planning notes and drafts. These are working documents, not part of the
-# tool: internal decision logs, self-review, and the separate competition
-# project. They stay on disk; they do not go in the repository.
+# AFK — the separate async-delegation experiment. Not part of this tool.
+_afk/
+
+# ...and the project memory AFK writes into whatever repository it is pointed
+# at. When AFK runs against *this* repository, it creates .afk/PROJECT.md and
+# .afk/HISTORY.md here. Those are the tool's own scratch, not this project's
+# source. AFK already refuses to count them as a dirty worktree (memory.owns);
+# this line is the other half — keeping `git add -A` from publishing them.
+.afk/
+
+# Live working documents. Not part of the tool; they stay on disk.
 DECISIONS.md
+产品与架构介绍.md
+待办清单.md
+崩溃恢复-开场白.md
+
+# Superseded planning docs, kept for history under _archive/. The bare names
+# stay listed so that moving them does not make them show up as untracked.
+_archive/
 NEXT-STEPS.md
 CODEX-BRIEF.md
 CODEX-HANDOFF.md
 EXPERIMENT-01-headless.md
 RAINBOW-OCTOPUS-v0.1-评审.md
 项目决策记录.md
+
+# A different project (the competition entry), not this tool.
+_xingchen/
 XINGCHEN-WORKFLOW.md
 xingchen-code-node.py
 

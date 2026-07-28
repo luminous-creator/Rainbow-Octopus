@@ -54,12 +54,42 @@ python -m twine check @($artifacts.FullName)
 if ($LASTEXITCODE -ne 0) { throw 'twine check failed.' }
 
 Step 'Clean-install smoke test'
+
+# Clear PYTHONPATH first. This step exists to prove the wheel installs into a
+# *clean* environment, and the PYTHONPATH set earlier for the test run made it
+# anything but: with `src` on the path, pip discovers src\rainbow_octopus.egg-info,
+# concludes the requirement is already satisfied, exits 0, and installs nothing.
+# The failure then surfaces as a missing rocto.exe, which points nowhere near
+# the cause. An environment variable set for one step must not leak into a step
+# whose entire purpose is isolation.
+$env:PYTHONPATH = ''
+
 $venv = Join-Path $env:TEMP "rocto-release-$(Get-Random)"
 python -m venv $venv
-& "$venv\Scripts\pip.exe" install --quiet ($artifacts | Where-Object Extension -eq '.whl').FullName
-& "$venv\Scripts\rocto.exe" --version
-& "$venv\Scripts\rocto.exe" --help | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'Installed package is broken.' }
+if ($LASTEXITCODE -ne 0) { throw "Could not create a virtualenv at $venv." }
+
+$wheel = ($artifacts | Where-Object Extension -eq '.whl').FullName
+
+# Not --quiet, and the exit code is checked.
+#
+# This step used to install quietly and never look at the result, so a failed
+# install surfaced three lines later as "rocto.exe is not recognized" — which
+# points at the wrong thing entirely. A release script that hides the one error
+# that matters is worse than no release script.
+& "$venv\Scripts\pip.exe" install $wheel
+if ($LASTEXITCODE -ne 0) { throw "pip could not install $wheel (see the output above)." }
+
+$rocto = Join-Path $venv 'Scripts\rocto.exe'
+if (-not (Test-Path $rocto)) {
+    Write-Host "`nInstalled files under Scripts\:" -ForegroundColor Yellow
+    Get-ChildItem (Join-Path $venv 'Scripts') | ForEach-Object { Write-Host "  $($_.Name)" }
+    throw "The wheel installed but produced no rocto.exe — check [project.scripts] in pyproject.toml."
+}
+
+& $rocto --version
+if ($LASTEXITCODE -ne 0) { throw 'rocto --version failed.' }
+& $rocto --help | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'rocto --help failed.' }
 Remove-Item $venv -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host '  install + CLI OK' -ForegroundColor Green
 

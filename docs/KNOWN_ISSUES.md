@@ -441,6 +441,29 @@ print the install command for the host platform instead of a bare "not found".
   non-Edge browser needs different flags, add them per-browser rather than
   changing the default for everyone.
 
+### What was actually verified, and what was not
+
+Discovery is done and well covered: `find_browser()` searches per-platform
+candidate lists, `ROCTO_BROWSER_BIN` overrides everything, `ROCTO_EDGE_BIN`
+still works, `find_edge()` survives as an alias, `rocto doctor` names the
+browser or prints a per-platform install hint, and `_headless_flag()` keeps
+`--headless=old` for Edge — KI-001's proven combination — while other Chromium
+builds get the current flag. 121 tests pass, 10 of them driving discovery
+against a faked filesystem and `PATH`, and no browser needs to be installed for
+any of them.
+
+**The interaction loop itself has still only ever run against Edge on Windows
+11.** No macOS or Linux host has yet launched a browser, clicked through a
+generated page and posted a verdict back. `--headless` on Chrome is the
+reasonable default — KI-001 was an Edge-specific GPU crash, so applying its
+workaround everywhere would be cargo-culting — but "reasonable" is not
+"observed", and this project does not claim the difference away.
+
+So this entry is FIXED in the sense that Windows-only discovery is gone, and
+open in the sense that the second and third platforms are supported but
+unproven. Running `test_real_browser_interaction_and_screenshot` once on a
+Linux host with Chromium installed, and once on macOS, is what closes that gap.
+
 ---
 
 ## ADR-001 — v0.1 can generate the site with a single DeepSeek call
