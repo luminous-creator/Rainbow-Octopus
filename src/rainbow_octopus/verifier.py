@@ -1071,6 +1071,16 @@ def _serve(directory: Path) -> Iterator[tuple[str, _HarnessServer]]:
         thread.join(timeout=2)
 
 
+_MIN_HEADLESS_WIDTH = 500
+_FRAME_MARGIN = 28
+_PHONE_FRAME = """<!doctype html><html><head><meta charset="utf-8"><style>
+html,body{{margin:0;background:#e9ecf2}}
+body{{display:flex;justify-content:center;padding:28px 0}}
+iframe{{width:{w}px;height:{h}px;border:0;border-radius:18px;background:#fff;
+box-shadow:0 2px 10px rgba(20,30,50,.18)}}
+</style></head><body><iframe src="index.html"></iframe></body></html>"""
+
+
 def capture(project_dir: Path, target: Path, window_size: str = "1440,1000", timeout: int = 30) -> bool:
     """Screenshot a finished site at a given window size (used by `rocto kit`)."""
     verifier = BrowserVerifier(timeout=timeout)
@@ -1084,7 +1094,19 @@ def capture(project_dir: Path, target: Path, window_size: str = "1440,1000", tim
             if (project_dir / name).is_file():
                 shutil.copy2(project_dir / name, site / name)
         shot = temp / "shot.png"
+        width, height = (int(v) for v in window_size.split(","))
+        page = "index.html"
+        if width < _MIN_HEADLESS_WIDTH:
+            # Headless Chromium will not make a window narrower than 500 px:
+            # the page lays out at 500 and the capture crops it to `width`,
+            # cutting off the right edge. A frame of the real width inside a
+            # wider window gives the page a true phone-width viewport.
+            page = "__rocto_phone.html"
+            (site / page).write_text(_PHONE_FRAME.format(w=width, h=height), encoding="utf-8")
+            frame_width = max(width + 2 * _FRAME_MARGIN, _MIN_HEADLESS_WIDTH)
+            window_size = f"{frame_width},{height + 2 * _FRAME_MARGIN}"
         with _serve(site) as (url, _):
+            url = url.rsplit("/", 1)[0] + "/" + page
             ok, _ = verifier._take_screenshot(url, shot, temp / "profile", window_size)
         if ok and shot.is_file():
             target.parent.mkdir(parents=True, exist_ok=True)

@@ -166,6 +166,28 @@ document.querySelector('[data-testid="add"]').addEventListener("click", () => {
         self.assertTrue(hidden and all(not c.passed and "element is hidden" in c.detail for c in hidden), details)
         self.assertEqual(len([c for c in report.checks if c.name.startswith("second:")]), 6, details)
 
+    @unittest.skipIf(browser_test_reason(), browser_test_reason() or "")
+    def test_phone_screenshots_lay_out_at_phone_width(self):
+        """Headless Chromium's 500 px minimum window cropped phone captures."""
+        from rainbow_octopus.verifier import capture
+        import struct
+
+        with tempfile.TemporaryDirectory() as temp_name:
+            project = Path(temp_name) / "site"
+            project.mkdir()
+            write_sample_site(project)
+            (project / "index.html").write_text(
+                '<!doctype html><meta name="viewport" content="width=device-width">'
+                '<link rel="stylesheet" href="styles.css"><body>'
+                '<div id="w" data-testid="count"></div><script src="script.js"></script>',
+                encoding="utf-8",
+            )
+            target = Path(temp_name) / "phone.png"
+            self.assertTrue(capture(project, target, window_size="390,844"))
+            width, height = struct.unpack(">II", target.read_bytes()[16:24])
+        self.assertGreaterEqual(width, 390 + 2 * 28)
+        self.assertGreaterEqual(height, 844)
+
 
 class TestIdDeclarationTests(unittest.TestCase):
     def test_script_created_ids_count_but_lookups_do_not(self):
