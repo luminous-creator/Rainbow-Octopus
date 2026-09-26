@@ -163,3 +163,28 @@ def with_retries(
                     pass
             sleep(delay)
     raise AssertionError("unreachable")  # pragma: no cover
+
+
+def usage_tokens(usage: object) -> int | None:
+    """Total tokens from an OpenAI-style or Anthropic-style ``usage`` object.
+
+    Reported so a user can see what a build cost even when the provider
+    reports tokens rather than money (DeepSeek and most compatible APIs).
+    """
+    if not isinstance(usage, dict):
+        return None
+    total = usage.get("total_tokens")
+    if isinstance(total, int):
+        return total
+    keys = (
+        "prompt_tokens", "completion_tokens", "input_tokens", "output_tokens",
+        "cache_creation_input_tokens", "cache_read_input_tokens",
+    )
+    values = [usage.get(key) for key in keys if isinstance(usage.get(key), int)]
+    return sum(values) if values else None
+
+
+def add_tokens(total: int | None, more: int | None) -> int | None:
+    if more is None:
+        return total
+    return (total or 0) + more

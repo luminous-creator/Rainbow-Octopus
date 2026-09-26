@@ -19,6 +19,8 @@ from .provider import (
     missing_key_message,
     resolve_api_key,
     resolve_base_url,
+    add_tokens,
+    usage_tokens,
     with_retries,
 )
 
@@ -275,6 +277,7 @@ class DeepSeekExecutor:
         self.last_usage: dict | None = None
         #: DeepSeek reports tokens, not money, so this stays None.
         self.last_cost_usd: float | None = None
+        self.last_tokens: int | None = None
 
     def healthcheck(self) -> tuple[bool, str]:
         if not self.api_key:
@@ -322,6 +325,7 @@ class DeepSeekExecutor:
             "User-Agent": f"rainbow-octopus/{__version__}",
         }
         self.last_usage = None
+        self.last_tokens = None
         try:
             retry_kwargs = {"sleep": self.sleep} if self.sleep else {}
             raw = with_retries(
@@ -334,6 +338,7 @@ class DeepSeekExecutor:
             response = json.loads(raw.decode("utf-8"))
             usage = response.get("usage") if isinstance(response, dict) else None
             self.last_usage = usage if isinstance(usage, dict) else None
+            self.last_tokens = usage_tokens(self.last_usage)
             content = response["choices"][0]["message"]["content"]
             files = _extract_files(content)
         except urllib.error.HTTPError as exc:
@@ -423,6 +428,7 @@ class ClaudeCodeExecutor:
         self.runner = runner
         #: What the last attempt cost, as Claude Code reported it.
         self.last_cost_usd: float | None = None
+        self.last_tokens: int | None = None
 
     def healthcheck(self) -> tuple[bool, str]:
         """Report available only when the CLI exists *and* is signed in.
@@ -503,6 +509,7 @@ class ClaudeCodeExecutor:
         prompt = _build_prompt(spec, attempt, previous_failure, change_request)
         command = self._command()
         self.last_cost_usd = None
+        self.last_tokens = None
         try:
             completed = self.runner(
                 command,
@@ -534,6 +541,7 @@ class ClaudeCodeExecutor:
             command=["<claude>", *command[1:]],
         )
         self.last_cost_usd = _claude_cost(completed.stdout)
+        self.last_tokens = _claude_tokens(completed.stdout)
         _write_execution_log(project_dir, attempt, result, prefix="claude", extra={
             "removed_stray_paths": removed,
             "cost_usd": self.last_cost_usd,
@@ -580,6 +588,13 @@ def _claude_cost(stdout: str) -> float | None:
     return None
 
 
+def _claude_tokens(stdout: str) -> int | None:
+    for event in reversed(list(_claude_events(stdout))):
+        if isinstance(event, dict) and isinstance(event.get("usage"), dict):
+            return usage_tokens(event["usage"])
+    return None
+
+
 def _claude_result_message(stdout: str) -> str:
     """Pull the human-readable failure reason out of the result event.
 
@@ -619,6 +634,7 @@ class RouterExecutor:
         self.backends = backends
         self.last_used: str | None = None
         self.last_cost_usd: float | None = None
+        self.last_tokens: int | None = None
         self._health: dict[str, tuple[bool, str]] = {}
         if escalate_after is None:
             try:
@@ -698,6 +714,7 @@ class RouterExecutor:
             if self._demoted(name)
         ]
         self.last_cost_usd = None
+        self.last_tokens = None
         for name, backend in self.ordered_backends():
             available, detail = self._availability(name, backend)
             if not available:
@@ -711,6 +728,7 @@ class RouterExecutor:
                 self.last_cost_usd = _add_cost(
                     self.last_cost_usd, getattr(backend, "last_cost_usd", None)
                 )
+                self.last_tokens = add_tokens(self.last_tokens, getattr(backend, "last_tokens", None))
                 if not change_request:
                     # A new build starts clean for the next backend; a change
                     # to an existing site must keep the site it is changing.
@@ -720,6 +738,7 @@ class RouterExecutor:
             self.last_cost_usd = _add_cost(
                 self.last_cost_usd, getattr(backend, "last_cost_usd", None)
             )
+            self.last_tokens = add_tokens(self.last_tokens, getattr(backend, "last_tokens", None))
             _write_router_log(project_dir, attempt, name, errors, demoted)
             return result
         self.last_used = None
@@ -948,7 +967,9 @@ def _build_prompt(
     change_request: str | None = None,
     current_files: dict[str, str] | None = None,
 ) -> str:
-    spec_json = json.dumps(spec.to_dict(), ensure_ascii=False, indent=2)
+    # Compact JSON: indentation is pure token cost to a model, and this block
+    # is sent on every attempt of every build.
+    spec_json = json.dumps(spec.to_dict(), ensure_ascii=False, separators=(",", ":"))
     retry = ""
     if previous_failure:
         retry = f"""

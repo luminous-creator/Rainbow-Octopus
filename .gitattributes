@@ -9,3 +9,6 @@
 
 # Never touch these.
 *.png binary
+
+# cmd.exe needs CRLF batch files.
+*.bat text eol=crlf

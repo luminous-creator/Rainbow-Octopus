@@ -26,6 +26,9 @@ idea → task specification (checked, repaired) → the first available coding a
 It runs on Windows, macOS and Linux and deliberately does one kind of task:
 a vanilla HTML/CSS/JavaScript page, built new or changed in place.
 
+> **第一次用？看 [新手指南](docs/新手指南.md)** —— 不需要懂 AI，10 分钟从一句话到比赛材料。
+> Windows 上直接双击 `start-windows.bat`。
+
 ## Quick start
 
 ```bash
@@ -33,7 +36,11 @@ pip install -e .
 rocto doctor                         # what is installed, what to fix
 rocto build "一个带今日完成次数统计的番茄钟网页"
 rocto open                           # the report of the build you just ran
+rocto kit                            # competition pack: 作品说明书, screenshots, source, Q&A
 ```
+
+Or just run `rocto` with nothing after it: it asks what to build (in Chinese),
+builds it, and offers to make the competition pack.
 
 That is the whole loop. There is no output directory to choose (builds go to
 `rocto-builds/<timestamp>-<slug>/`), and every follow-up command defaults to
@@ -110,7 +117,8 @@ took and what it cost.
 
 ```text
 rocto build IDEA   [-o DIR] [--planner auto|api|claude] [--executor auto|claude|codex|deepseek]
-                   [--max-retries 0..4] [--escalate-after N] [--max-minutes M] [--max-cost-usd USD]
+                   [--mode auto|cheap|best] [--max-retries 0..4] [--escalate-after N]
+                   [--max-minutes M] [--max-cost-usd USD]
                    [--review-plan] [--spec task.json] [--open] [-q | --json-events]
 rocto resume [DIR]            continue from the last checkpoint
 rocto refine CHANGE [DIR]     change a passing build; rolls back if the change fails
@@ -118,6 +126,7 @@ rocto status [DIR]            state, attempts, and the next command to run
 rocto report [DIR] [--format text|markdown|html]
 rocto open [DIR] [--site]     open report.html (or the page)
 rocto serve [DIR]             preview on http://127.0.0.1:8765
+rocto kit [DIR] [--no-ai]     competition submission pack (see below)
 rocto doctor                  prerequisites, with a fix for each failure
 rocto config [show|set|unset|path]    rocto init    (writes a commented rocto.toml)
 rocto stats                   pass rates, time and spend per executor, from every past build
@@ -154,6 +163,37 @@ anything is reported as failed.
 - `--review-plan` shows the plan in words and asks **y / e(dit) / n** before any
   generation is paid for. Without a terminal it is skipped with a warning.
 - `--spec task.json` builds from a specification you already have.
+
+## Competition submission pack
+
+`rocto kit` turns a passing build into what a student competition usually asks
+for, in a folder next to the build (`<build>-kit/`):
+
+| File | What it is |
+| --- | --- |
+| `作品说明书.md` / `.html` | project description; open the HTML in a browser and save as PDF |
+| `截图/桌面版.png`, `截图/手机版.png` | desktop and phone screenshots |
+| `源码.zip`, `源码/` | the source |
+| `测试报告.html` | evidence: every automated check and its result |
+| `答辩准备.md` | five questions judges are likely to ask, with honest answers |
+| `提交清单.txt` | a checklist to go through before submitting |
+
+The descriptions are written by one short model call (about 4k tokens, $0.02
+with Claude; a fraction of a cent with DeepSeek), or by a built-in template
+with `--no-ai`, at no cost. **Facts are never written by the model**: check
+counts, test cases, what was not verified and who wrote the code come from the
+build itself. Every pack contains an AI-use declaration, and the checklist
+tells the student to check whether the competition allows AI tools at all.
+
+## Cost
+
+- `--mode cheap` puts the pay-per-token API backend first (about one cent per
+  build with DeepSeek) and keeps subscription CLIs as fallbacks; `--mode best`
+  puts Claude Code first.
+- Every report shows the tokens and dollars each build used; `rocto stats`
+  totals them.
+- `rocto resume` re-checks a page that is already on disk before paying for a
+  new one, and `rocto kit --no-ai` costs nothing.
 
 ## Executors
 

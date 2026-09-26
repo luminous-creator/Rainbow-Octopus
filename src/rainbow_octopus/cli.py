@@ -76,9 +76,31 @@ def _env_bool(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+#: What --mode means, as an executor failover order. `cheap` puts the
+#: pay-per-token API first (about a cent per build with DeepSeek) and keeps
+#: subscription CLIs as fallbacks; `best` puts the strongest agent first.
+MODES = {
+    "cheap": "deepseek,codex,claude",
+    "best": "claude,codex,deepseek",
+}
+
+
+def _apply_mode(args: argparse.Namespace) -> None:
+    order = MODES.get(getattr(args, "mode", "auto") or "auto")
+    if order:
+        os.environ["ROCTO_EXECUTOR_ORDER"] = order
+
+
 def _add_run_options(parser: argparse.ArgumentParser, *, planning: bool) -> None:
     """Options shared by build, resume and refine."""
     order = ", ".join(auto_order())
+    parser.add_argument(
+        "--mode",
+        choices=("auto", *MODES),
+        default=(os.environ.get("ROCTO_MODE") or "auto"),
+        help="cheap: lowest-cost backend first; best: strongest first; "
+        "auto: executor_order as configured",
+    )
     parser.add_argument(
         "--executor",
         choices=EXECUTOR_CHOICES,
@@ -160,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Typical use:  rocto build \"a pomodoro timer with a daily counter\"",
     )
     parser.add_argument("--version", action="version", version=__version__)
-    sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
+    sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     doctor = sub.add_parser("doctor", help="Check what is installed and what to fix")
     doctor.add_argument("--json", action="store_true", help="Print machine-readable JSON")
@@ -236,6 +258,16 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--json", action="store_true", help="Print the summary as JSON")
     _add_run_options(batch, planning=True)
 
+    kit = sub.add_parser(
+        "kit", help="Make a competition submission pack (说明书, screenshots, source, Q&A)"
+    )
+    kit.add_argument("project", nargs="?", type=Path, help="Build directory (default: the last build)")
+    kit.add_argument("--output", "-o", type=Path, help="Where to write it (default: <build>-kit)")
+    kit.add_argument("--no-ai", action="store_true", help="Use the built-in template: no model call, no cost")
+    kit.add_argument("--planner", choices=PLANNER_CHOICES, default=os.environ.get("ROCTO_PLANNER") or "auto")
+    kit.add_argument("--force", action="store_true", help="Also for a build that did not pass")
+    kit.add_argument("--open", action="store_true", help="Open the description when done")
+
     gallery = sub.add_parser("gallery", help="Collect passing builds into one static site")
     gallery.add_argument("source", type=Path, help="Directory that contains build directories")
     gallery.add_argument("--output", "-o", type=Path, required=True)
@@ -272,7 +304,13 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"Config error: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command is None:
+        if sys.stdin.isatty():
+            return _wizard()
+        parser.print_help()
+        return EXIT_USAGE
     handlers: dict[str, Callable[[argparse.Namespace], int]] = {
         "doctor": lambda a: _doctor(a.json),
         "build": _build,
@@ -287,6 +325,7 @@ def main(argv: list[str] | None = None) -> int:
         "stats": _stats,
         "batch": _batch,
         "gallery": _gallery,
+        "kit": _kit,
     }
     try:
         return handlers[args.command](args)
@@ -395,6 +434,7 @@ def _orchestrator_for(args: argparse.Namespace, *, planning: bool, **extra: Any)
 
 
 def _validate_run_args(args: argparse.Namespace) -> str | None:
+    _apply_mode(args)
     if args.timeout < 30:
         return "--timeout must be at least 30 seconds"
     if args.escalate_after < 0:
@@ -856,6 +896,69 @@ def _batch(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0 if summary["gate_passed"] else 1
+
+
+def _kit(args: argparse.Namespace) -> int:
+    from .kit import KitError, build_kit
+
+    project = _project_or_last(args.project)
+    if project is None:
+        return EXIT_USAGE
+    try:
+        result = build_kit(
+            project, args.output, use_ai=not args.no_ai,
+            planner_choice=args.planner, force=args.force,
+        )
+    except KitError as exc:
+        print(f"Kit failed: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    print(f"\n  比赛材料已生成：{result.directory}\n")
+    for path in result.files:
+        print(f"    {path.name}")
+    how = "内置模板（没有调用 AI，零花费）" if result.text.written_by == "template" else f"AI（{result.text.written_by}）"
+    cost = ""
+    if result.tokens:
+        cost += f"，{result.tokens:,} tokens"
+    if result.cost_usd:
+        cost += f"，${result.cost_usd:.2f}"
+    print(f"\n  说明文字由 {how} 撰写{cost}。")
+    for note in result.notes:
+        print(f"  注意：{note}")
+    print("  下一步：按《提交清单.txt》逐项检查，再提交。")
+    if args.open:
+        _open_path(result.directory / "作品说明书.html")
+    return 0
+
+
+def _wizard() -> int:
+    """`rocto` with no arguments: ask in plain Chinese, then do everything."""
+    print("\n🐙 Rainbow Octopus —— 一句话做出一个经过测试的网页\n")
+    checks = run_doctor()
+    if not doctor_as_dict(checks)["passed"]:
+        print("开始之前还缺点东西：")
+        for check in checks:
+            if check.required and not check.passed:
+                print(f"  - {check.name}: {check.fix or check.detail}")
+        print("\n补好之后再运行一次 rocto。")
+        return 1
+    try:
+        idea = input("你想做一个什么样的网页？用一句话描述：\n> ").strip()
+    except EOFError:
+        return EXIT_USAGE
+    if not idea:
+        print("没有输入需求，已退出。")
+        return EXIT_USAGE
+    code = main(["build", idea])
+    if code != 0:
+        print("\n这次没有完全成功。可以运行 rocto resume 接着做，不会重复花钱。")
+        return code
+    try:
+        answer = input("\n要生成比赛提交材料吗？(说明书、截图、源码包、答辩问答) [Y/n] ").strip().lower()
+    except EOFError:
+        answer = "n"
+    if answer in {"", "y", "yes", "是", "要"}:
+        return main(["kit", "--open"])
+    return 0
 
 
 def _gallery(args: argparse.Namespace) -> int:

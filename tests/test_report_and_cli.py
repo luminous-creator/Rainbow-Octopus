@@ -40,9 +40,25 @@ class ReportTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.out = Path(self._tmp.name) / "site"
+        # The idea below is Chinese; these tests check the English wording.
+        self._lang = mock.patch.dict(os.environ, {"ROCTO_LANG": "en"})
+        self._lang.start()
 
     def tearDown(self):
+        self._lang.stop()
         self._tmp.cleanup()
+
+    def test_a_chinese_idea_gets_a_chinese_report(self):
+        with mock.patch.dict(os.environ, {"ROCTO_LANG": ""}):
+            summary = self._build(False)
+            text = render_text(summary)
+            html = render_html(summary)
+        self.assertEqual(summary.lang, "zh")
+        self.assertIn("还不能用", text)
+        self.assertIn("哪里没通过", text)
+        self.assertIn("点击 [increment]", text + html)
+        self.assertIn('lang="zh-CN"', html)
+        self.assertIn("检查了什么", html)
 
     def _build(self, passed: bool):
         results = [browser_report(passed)]
@@ -274,6 +290,14 @@ class BuildCommandTests(CliTestCase):
         code, _, err = self.run_cli("doctor")
         self.assertEqual(code, 2)
         self.assertIn("never reads API keys", err)
+
+    def test_cheap_mode_puts_the_api_backend_first(self):
+        os.environ.pop("ROCTO_EXECUTOR_ORDER", None)
+        try:
+            self.run_cli("build", "x", "-q", "--mode", "cheap")
+            self.assertEqual(os.environ["ROCTO_EXECUTOR_ORDER"], "deepseek,codex,claude")
+        finally:
+            os.environ.pop("ROCTO_EXECUTOR_ORDER", None)
 
     def test_status_without_any_build(self):
         code, _, err = self.run_cli("status")

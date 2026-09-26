@@ -35,6 +35,8 @@ class RunState:
     executor: str | None = None
     #: Reported spend across planner and executors, when anything reported it.
     cost_usd: float | None = None
+    #: Tokens reported by planner and executors across the whole build.
+    tokens: int | None = None
     #: "build" for a new site, "refine" once a change request has run.
     kind: str = "build"
     #: Incremented by every successful `rocto refine`.
@@ -52,9 +54,11 @@ class RunState:
             {"at": self.updated_at, "phase": phase, "detail": detail[:1000]}
         )
 
-    def add_cost(self, amount: float | None) -> None:
+    def add_cost(self, amount: float | None, tokens: int | None = None) -> None:
         if amount is not None:
             self.cost_usd = round((self.cost_usd or 0.0) + amount, 6)
+        if tokens is not None:
+            self.tokens = (self.tokens or 0) + tokens
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -65,6 +65,9 @@ SETTINGS: tuple[Setting, ...] = (
             "Model the API executor uses; defaults to `model`"),
     Setting("planner", "ROCTO_PLANNER", str, "auto",
             "auto | api | claude — who writes the task specification"),
+    Setting("mode", "ROCTO_MODE", str, "auto",
+            "auto | cheap | best — cheap tries the lowest-cost backend first, "
+            "best the strongest"),
     Setting("executor", "ROCTO_EXECUTOR", str, "auto",
             "auto | claude | codex | deepseek — who writes the site"),
     Setting("executor_order", "ROCTO_EXECUTOR_ORDER", str, "claude,codex,deepseek",

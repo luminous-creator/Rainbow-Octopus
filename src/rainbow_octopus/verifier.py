@@ -813,7 +813,7 @@ setTimeout(() => __roctoPost({{checks: [{{
         return _parse_harness_payload(server.rocto_result)
 
     def _take_screenshot(
-        self, url: str, screenshot: Path, profile: Path
+        self, url: str, screenshot: Path, profile: Path, window_size: str = "1440,1000"
     ) -> tuple[bool, str]:
         command = [
             str(self.browser_path),
@@ -824,7 +824,7 @@ setTimeout(() => __roctoPost({{checks: [{{
             "--hide-scrollbars",
             "--no-first-run",
             f"--user-data-dir={profile}",
-            "--window-size=1440,1000",
+            f"--window-size={window_size}",
             f"--screenshot={screenshot}",
             url,
         ]
@@ -1069,3 +1069,25 @@ def _serve(directory: Path) -> Iterator[tuple[str, _HarnessServer]]:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def capture(project_dir: Path, target: Path, window_size: str = "1440,1000", timeout: int = 30) -> bool:
+    """Screenshot a finished site at a given window size (used by `rocto kit`)."""
+    verifier = BrowserVerifier(timeout=timeout)
+    if not verifier.browser_path:
+        return False
+    with tempfile.TemporaryDirectory(prefix="rocto-shot-") as temp_name:
+        temp = Path(temp_name)
+        site = temp / "site"
+        site.mkdir()
+        for name in ("index.html", "styles.css", "script.js"):
+            if (project_dir / name).is_file():
+                shutil.copy2(project_dir / name, site / name)
+        shot = temp / "shot.png"
+        with _serve(site) as (url, _):
+            ok, _ = verifier._take_screenshot(url, shot, temp / "profile", window_size)
+        if ok and shot.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(shot, target)
+            return True
+    return False

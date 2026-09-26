@@ -18,6 +18,8 @@ from .provider import (
     missing_key_message,
     resolve_api_key,
     resolve_base_url,
+    add_tokens,
+    usage_tokens,
     with_retries,
 )
 
@@ -52,6 +54,9 @@ class _RepairingPlanner:
 
     #: Shown in progress output and the run log.
     label = "planner"
+    #: What the model is told it is. `rocto kit` reuses these backends with
+    #: its own prompt, so the transport code exists once.
+    system_prompt: str = ""
 
     def __init__(self, max_attempts: int = 3):
         if not 1 <= max_attempts <= 5:
@@ -64,6 +69,8 @@ class _RepairingPlanner:
         self.last_attempts: int = 0
         #: Reported spend of the last plan() call, when the backend knows it.
         self.last_cost_usd: float | None = None
+        #: Tokens the last plan() call used, when the backend reports them.
+        self.last_tokens: int | None = None
         #: Progress sink for retries; wired up by the orchestrator.
         self.notify: Callable[[str], None] | None = None
 
@@ -76,7 +83,7 @@ class _RepairingPlanner:
 
     def refine(self, spec: TaskSpec, request: str) -> TaskSpec:
         """Return an updated specification for a change to an existing build."""
-        current = json.dumps(spec.to_dict(), ensure_ascii=False, indent=2)
+        current = json.dumps(spec.to_dict(), ensure_ascii=False, separators=(",", ":"))
         return self._plan_loop(
             [
                 {
@@ -89,6 +96,7 @@ class _RepairingPlanner:
     def _plan_loop(self, conversation: list[dict[str, str]]) -> TaskSpec:
         self.ensure_ready()
         self.last_cost_usd = None
+        self.last_tokens = None
         last_problem = "unknown"
         for attempt in range(1, self.max_attempts + 1):
             self.last_attempts = attempt
@@ -169,7 +177,7 @@ class DeepSeekPlanner(_RepairingPlanner):
             raise PlanningError(missing_key_message())
 
     def _complete(self, conversation: list[dict[str, str]]) -> Any:
-        messages = [{"role": "system", "content": _SYSTEM_PROMPT}, *conversation]
+        messages = [{"role": "system", "content": self.system_prompt or _SYSTEM_PROMPT}, *conversation]
         payload = {
             "model": self.model,
             "messages": messages,
@@ -199,6 +207,8 @@ class DeepSeekPlanner(_RepairingPlanner):
             raise PlanningError(f"{self.base_url} did not answer: {exc}") from exc
         try:
             response = json.loads(raw.decode("utf-8"))
+            if isinstance(response, dict):
+                self.last_tokens = add_tokens(self.last_tokens, usage_tokens(response.get("usage")))
             return response["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise PlanningError(
@@ -261,7 +271,7 @@ class ClaudeCodePlanner(_RepairingPlanner):
             "--max-budget-usd",
             str(self.max_budget_usd),
             "--system-prompt",
-            _SYSTEM_PROMPT,
+            self.system_prompt or _SYSTEM_PROMPT,
         ]
         if self.model:
             command += ["--model", self.model]
@@ -296,6 +306,7 @@ class ClaudeCodePlanner(_RepairingPlanner):
         cost = event.get("total_cost_usd")
         if isinstance(cost, (int, float)):
             self.last_cost_usd = (self.last_cost_usd or 0.0) + float(cost)
+        self.last_tokens = add_tokens(self.last_tokens, usage_tokens(event.get("usage")))
         result = event.get("result")
         if completed.returncode != 0 or event.get("is_error") or not isinstance(result, str):
             detail = (

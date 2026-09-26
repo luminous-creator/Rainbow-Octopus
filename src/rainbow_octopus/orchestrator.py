@@ -260,11 +260,17 @@ class Orchestrator:
                 if refine_plan is None:
                     raise PlanningError("this planner cannot plan a change")
                 new_spec = refine_plan(spec, request)
-                state.add_cost(getattr(self.planner, "last_cost_usd", None))
+                state.add_cost(
+                getattr(self.planner, "last_cost_usd", None),
+                getattr(self.planner, "last_tokens", None),
+            )
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
-                state.add_cost(getattr(self.planner, "last_cost_usd", None))
+                state.add_cost(
+                getattr(self.planner, "last_cost_usd", None),
+                getattr(self.planner, "last_tokens", None),
+            )
                 state.pending_change = None
                 state.transition("completed", "Change planning failed; nothing was modified", str(exc))
                 store.save(state)
@@ -397,11 +403,17 @@ class Orchestrator:
             store.save(state)
             self._emit("planning", f"asking {label} for a task specification")
             spec = self.planner.plan(state.idea)
-            state.add_cost(getattr(self.planner, "last_cost_usd", None))
+            state.add_cost(
+                getattr(self.planner, "last_cost_usd", None),
+                getattr(self.planner, "last_tokens", None),
+            )
         except KeyboardInterrupt:
             raise
         except Exception as exc:
-            state.add_cost(getattr(self.planner, "last_cost_usd", None))
+            state.add_cost(
+                getattr(self.planner, "last_cost_usd", None),
+                getattr(self.planner, "last_tokens", None),
+            )
             state.transition("failed", "Planning failed", str(exc))
             store.save(state)
             self._emit("failed", f"planning failed: {exc}")
@@ -517,14 +529,16 @@ class Orchestrator:
             except Exception as exc:
                 last_failure = str(exc)
                 cost = getattr(self.executor, "last_cost_usd", None)
+                tokens = getattr(self.executor, "last_tokens", None)
                 record.update(
+                    tokens=tokens,
                     outcome="execution_failed",
                     seconds=round(self.clock() - executor_started, 1),
                     cost_usd=cost,
                     executor=getattr(self.executor, "last_used", None),
                     failure=last_failure[:2000],
                 )
-                state.add_cost(cost)
+                state.add_cost(cost, tokens)
                 state.last_failure = last_failure
                 state.transition("execution_failed", f"Attempt {attempt}", last_failure)
                 store.save(state)
@@ -533,13 +547,15 @@ class Orchestrator:
 
             chosen = getattr(self.executor, "last_used", None)
             cost = getattr(self.executor, "last_cost_usd", None)
+            tokens = getattr(self.executor, "last_tokens", None)
             record.update(
+                tokens=tokens,
                 outcome="executed",
                 executor=chosen,
                 seconds=round(self.clock() - executor_started, 1),
                 cost_usd=cost,
             )
-            state.add_cost(cost)
+            state.add_cost(cost, tokens)
             state.transition("executed", f"Attempt {attempt} wrote the site")
             store.save(state)
             self._emit(
