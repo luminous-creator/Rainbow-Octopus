@@ -36,7 +36,11 @@ specification.
 
 from __future__ import annotations
 
+from typing import Callable
 import os
+import socket
+import time
+import urllib.error
 
 #: DeepSeek's endpoint has no `/v1` segment; OpenAI-compatible ones usually do.
 DEFAULT_BASE_URL = "https://api.deepseek.com"
@@ -75,3 +79,87 @@ def missing_key_message() -> str:
 
 def is_default_provider(base_url: str | None = None) -> bool:
     return resolve_base_url(base_url) == DEFAULT_BASE_URL
+
+
+# --------------------------------------------------------------------------
+# Transient-failure retry (ADR-005)
+# --------------------------------------------------------------------------
+
+#: Status codes worth a second try: rate limiting and server-side trouble.
+#: Everything else in 4xx (a bad key, a bad model name) fails immediately —
+#: retrying a 401 just delays the same message.
+RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 529})
+
+#: Upper bound for one wait, whatever Retry-After asks for. An unattended
+#: build should slow down on a rate limit, not stall for an hour.
+MAX_BACKOFF_SECONDS = 30.0
+
+
+def is_transient(exc: BaseException) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in RETRYABLE_STATUS
+    if isinstance(exc, urllib.error.URLError):
+        return True
+    return isinstance(exc, (TimeoutError, socket.timeout, ConnectionError))
+
+
+def _retry_after(exc: BaseException) -> float | None:
+    headers = getattr(exc, "headers", None)
+    if headers is None:
+        return None
+    try:
+        value = headers.get("Retry-After")
+    except AttributeError:
+        return None
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None  # HTTP-date form; fall back to exponential backoff
+
+
+def describe_error(exc: BaseException) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTP {exc.code}"
+    if isinstance(exc, urllib.error.URLError):
+        return f"unreachable ({exc.reason})"
+    return type(exc).__name__
+
+
+def with_retries(
+    call: Callable[[], bytes],
+    *,
+    attempts: int = 3,
+    base_delay: float = 2.0,
+    notify: Callable[[str], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    what: str = "request",
+) -> bytes:
+    """Run ``call``; retry transient network failures with backoff.
+
+    A planner or executor request that dies on one 503 used to fail the whole
+    build. Attended, that is an annoyance; unattended — a batch, a nightly
+    job, an issue-triggered workflow — it is the difference between a result
+    and a red run nobody can act on.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except Exception as exc:  # noqa: BLE001 - filtered by is_transient
+            if attempt >= attempts or not is_transient(exc):
+                raise
+            delay = _retry_after(exc)
+            if delay is None:
+                delay = base_delay * (2 ** (attempt - 1))
+            delay = min(delay, MAX_BACKOFF_SECONDS)
+            if notify:
+                try:
+                    notify(
+                        f"{what} failed ({describe_error(exc)}); retry "
+                        f"{attempt + 1}/{attempts} in {delay:.0f}s"
+                    )
+                except Exception:  # noqa: BLE001 - reporting must never break a call
+                    pass
+            sleep(delay)
+    raise AssertionError("unreachable")  # pragma: no cover

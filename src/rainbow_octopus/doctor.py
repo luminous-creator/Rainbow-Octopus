@@ -6,7 +6,8 @@ import platform
 import sys
 
 from .executor import (
-    AUTO_ORDER,
+    KNOWN_BACKENDS,
+    auto_order,
     ClaudeCodeExecutor,
     CodexExecutor,
     DeepSeekExecutor,
@@ -30,6 +31,8 @@ class DoctorCheck:
     passed: bool
     detail: str
     required: bool = True
+    #: One concrete next step when the check fails.
+    fix: str = ""
 
 
 def _backend_checks() -> list[DoctorCheck]:
@@ -44,7 +47,8 @@ def _backend_checks() -> list[DoctorCheck]:
         "deepseek": lambda: DeepSeekExecutor().healthcheck(),
     }
     checks: list[DoctorCheck] = []
-    for name in AUTO_ORDER:
+    order = auto_order()
+    for name in (*order, *(n for n in KNOWN_BACKENDS if n not in order)):
         try:
             ok, detail = probes[name]()
         except Exception as exc:  # noqa: BLE001 - doctor must never crash
@@ -55,29 +59,58 @@ def _backend_checks() -> list[DoctorCheck]:
     return checks
 
 
+_KEY_FIX = (
+    f"set {API_KEY_ENV} (or {LEGACY_API_KEY_ENV}) to an API key, "
+    "or install Claude Code and run: claude auth login"
+)
+
+
+def _planner_check(key: str | None, where: str, claude_ok: bool) -> DoctorCheck:
+    """Planning needs an API key *or* a signed-in Claude Code (ADR-004)."""
+    choice = (os.environ.get("ROCTO_PLANNER") or "auto").strip().lower()
+    if choice == "claude":
+        return DoctorCheck(
+            "planner", claude_ok,
+            "claude (Claude Code CLI)" if claude_ok else "claude selected but Claude Code is not ready",
+            fix="" if claude_ok else "install Claude Code and run: claude auth login",
+        )
+    if choice == "api" or key:
+        return DoctorCheck(
+            "planner", bool(key),
+            f"api, key configured, endpoint {where}" if key
+            else f"api selected but no key: set {API_KEY_ENV} or {LEGACY_API_KEY_ENV}",
+            fix="" if key else _KEY_FIX,
+        )
+    if claude_ok:
+        return DoctorCheck("planner", True, "auto -> claude (no API key; using Claude Code)")
+    return DoctorCheck(
+        "planner", False,
+        f"no API key and no signed-in Claude Code; set {API_KEY_ENV} or {LEGACY_API_KEY_ENV}",
+        fix=_KEY_FIX,
+    )
+
+
 def run_doctor() -> list[DoctorCheck]:
     key = resolve_api_key()
     base_url = resolve_base_url()
     where = "DeepSeek (default)" if is_default_provider(base_url) else base_url
-    checks = [
-        DoctorCheck("python", sys.version_info >= (3, 10), platform.python_version()),
-        DoctorCheck(
-            "planner_api",
-            bool(key),
-            f"key configured, endpoint {where}"
-            if key
-            else f"set {API_KEY_ENV} or {LEGACY_API_KEY_ENV}",
-        ),
-    ]
-
     backends = _backend_checks()
     usable = [check.name.split(":", 1)[1] for check in backends if check.passed]
+    checks = [
+        DoctorCheck(
+            "python", sys.version_info >= (3, 10), platform.python_version(),
+            fix="install Python 3.10 or newer",
+        ),
+        _planner_check(key, where, "claude" in usable),
+    ]
+
     selected = os.environ.get("ROCTO_EXECUTOR", "auto")
     if selected == "auto":
+        routed = [name for name in auto_order() if name in usable]
         detail = (
-            f"auto -> {', '.join(usable)}" if usable else "no usable executor backend"
+            f"auto -> {', '.join(routed)}" if routed else "no usable executor backend"
         )
-        checks.append(DoctorCheck("executor", bool(usable), detail))
+        checks.append(DoctorCheck("executor", bool(routed), detail, fix=_KEY_FIX))
     else:
         ok = selected in usable
         checks.append(
@@ -85,6 +118,7 @@ def run_doctor() -> list[DoctorCheck]:
                 "executor",
                 ok,
                 f"{selected} ({'ready' if ok else 'not available'})",
+                fix=f"see the executor:{selected} line below, or use --executor auto",
             )
         )
     checks.extend(backends)
@@ -97,6 +131,7 @@ def run_doctor() -> list[DoctorCheck]:
             f"{browser_name(browser)}: {browser}"
             if browser
             else f"not found; {browser_install_hint()}",
+            fix=f"{browser_install_hint()}, or set ROCTO_BROWSER_BIN",
         )
     )
     return checks

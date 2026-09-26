@@ -10,6 +10,8 @@ dist/
 .env
 .rocto/
 benchmark-runs/
+# Default location of `rocto build` output when --output is not given.
+rocto-builds/
 work/
 
 # Session transcript backup: full conversation history, never publish.

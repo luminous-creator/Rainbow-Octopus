@@ -23,6 +23,26 @@ class RunState:
     updated_at: str = field(default_factory=utc_now)
     error: str | None = None
     history: list[dict[str, Any]] = field(default_factory=list)
+    #: One record per generation attempt: who wrote the page, how it fared,
+    #: how long it took and what it cost. This is the checkpoint `rocto
+    #: resume` continues from, and the evidence behind report.html.
+    attempts: list[dict[str, Any]] = field(default_factory=list)
+    #: The failure evidence the next repair attempt will be given.
+    last_failure: str | None = None
+    #: Who wrote the task specification ("api", "claude", "provided").
+    planner: str | None = None
+    #: The executor choice the build ran with ("auto", "claude", ...).
+    executor: str | None = None
+    #: Reported spend across planner and executors, when anything reported it.
+    cost_usd: float | None = None
+    #: "build" for a new site, "refine" once a change request has run.
+    kind: str = "build"
+    #: Incremented by every successful `rocto refine`.
+    revision: int = 0
+    #: Change requests applied so far, oldest first.
+    changes: list[str] = field(default_factory=list)
+    #: A change request that is being applied and has not finished yet.
+    pending_change: str | None = None
 
     def transition(self, phase: str, detail: str = "", error: str | None = None) -> None:
         self.phase = phase
@@ -31,6 +51,10 @@ class RunState:
         self.history.append(
             {"at": self.updated_at, "phase": phase, "detail": detail[:1000]}
         )
+
+    def add_cost(self, amount: float | None) -> None:
+        if amount is not None:
+            self.cost_usd = round((self.cost_usd or 0.0) + amount, 6)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -9,8 +9,11 @@ from unittest import mock
 from rainbow_octopus import doctor
 from rainbow_octopus.doctor import DoctorCheck
 from rainbow_octopus.verifier import (
+    _browser_env,
     _graphics_flags,
     _headless_flag,
+    _playwright_candidates,
+    _sandbox_flags,
     browser_install_hint,
     browser_name,
     find_browser,
@@ -237,6 +240,75 @@ class BrowserDiscoveryTests(unittest.TestCase):
             _graphics_flags(Path("/Applications/Google Chrome")),
             (),
         )
+
+
+class ContainerBrowserTests(unittest.TestCase):
+    """KI-009: containers run as root and often only have Playwright's Chromium."""
+
+    def test_playwright_chromium_is_found_newest_first_and_last_in_priority(self):
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = Path(temp_name)
+            old = touch(root / "chromium-1100" / "chrome-linux" / "chrome")
+            new = touch(root / "chromium-1194" / "chrome-linux64" / "chrome")
+            touch(root / "chromium_headless_shell-1194" / "chrome-linux" / "headless_shell")
+            with (
+                mock.patch.dict(os.environ, {"PLAYWRIGHT_BROWSERS_PATH": str(root)}, clear=True),
+                mock.patch("rainbow_octopus.verifier.Path.home", return_value=root / "nohome"),
+            ):
+                self.assertEqual(_playwright_candidates("Linux"), [new, old])
+                with (
+                    mock.patch("rainbow_octopus.verifier.platform.system", return_value="Linux"),
+                    mock.patch("rainbow_octopus.verifier.shutil.which", return_value=None),
+                ):
+                    self.assertEqual(find_browser(), new)
+                system_chrome = touch(root / "usr-bin-chromium")
+                with (
+                    mock.patch("rainbow_octopus.verifier.platform.system", return_value="Linux"),
+                    mock.patch(
+                        "rainbow_octopus.verifier.shutil.which",
+                        side_effect=lambda name: str(system_chrome) if name == "chromium" else None,
+                    ),
+                ):
+                    self.assertEqual(find_browser(), system_chrome)
+
+    def test_playwright_layouts_per_platform(self):
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = Path(temp_name)
+            win = touch(root / "chromium-1" / "chrome-win" / "chrome.exe")
+            mac = touch(root / "chromium-1" / "chrome-mac" / "Chromium.app" / "Contents" / "MacOS" / "Chromium")
+            with (
+                mock.patch.dict(os.environ, {"PLAYWRIGHT_BROWSERS_PATH": str(root)}, clear=True),
+                mock.patch("rainbow_octopus.verifier.Path.home", return_value=root / "nohome"),
+            ):
+                self.assertEqual(_playwright_candidates("Windows"), [win])
+                self.assertEqual(_playwright_candidates("Darwin"), [mac])
+
+    def test_root_on_linux_disables_the_sandbox(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch("rainbow_octopus.verifier.os.geteuid", return_value=0, create=True):
+                self.assertIn("--no-sandbox", _sandbox_flags("Linux"))
+                self.assertEqual(_sandbox_flags("Darwin"), ())
+                self.assertEqual(_sandbox_flags("Windows"), ())
+            with mock.patch("rainbow_octopus.verifier.os.geteuid", return_value=1000, create=True):
+                self.assertEqual(_sandbox_flags("Linux"), ())
+
+    def test_sandbox_can_be_forced_off_for_non_root(self):
+        with mock.patch.dict(os.environ, {"ROCTO_BROWSER_NO_SANDBOX": "1"}, clear=True):
+            with mock.patch("rainbow_octopus.verifier.os.geteuid", return_value=1000, create=True):
+                self.assertIn("--no-sandbox", _sandbox_flags("Linux"))
+
+    def test_the_browser_never_sees_credentials(self):
+        env = {
+            "PATH": "/bin",
+            "HOME": "/home/x",
+            "DEEPSEEK_API_KEY": "sk-1",
+            "ROCTO_API_KEY": "sk-2",
+            "GITHUB_TOKEN": "ghs",
+            "AWS_SECRET_ACCESS_KEY": "a",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            scrubbed = _browser_env()
+        self.assertEqual(scrubbed, {"PATH": "/bin", "HOME": "/home/x"})
 
 
 class BrowserDoctorTests(unittest.TestCase):

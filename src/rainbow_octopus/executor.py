@@ -12,12 +12,14 @@ import urllib.error
 import urllib.request
 
 from .models import TaskSpec
+from . import __version__
 from .provider import (
     completions_url,
     is_default_provider,
     missing_key_message,
     resolve_api_key,
     resolve_base_url,
+    with_retries,
 )
 
 #: The only files any executor may create inside an output directory.
@@ -160,6 +162,7 @@ class CodexExecutor:
         spec: TaskSpec,
         attempt: int,
         previous_failure: str | None = None,
+        change_request: str | None = None,
     ) -> ExecutionResult:
         if not self.codex_path:
             raise ExecutionError(
@@ -167,7 +170,7 @@ class CodexExecutor:
             )
         task_path = project_dir / ".rocto" / "task.json"
         before_hash = _sha256(task_path)
-        prompt = _build_prompt(spec, attempt, previous_failure)
+        prompt = _build_prompt(spec, attempt, previous_failure, change_request)
         command = self._command(project_dir, self.sandbox)
         try:
             completed = self._invoke(command, prompt)
@@ -250,6 +253,8 @@ class DeepSeekExecutor:
         timeout: int = 300,
         transport: HttpTransport = _urlopen_transport,
         base_url: str | None = None,
+        network_attempts: int = 3,
+        sleep: Callable[[float], None] | None = None,
     ):
         self.base_url = resolve_base_url(base_url)
         self.api_url = completions_url(self.base_url)
@@ -262,6 +267,14 @@ class DeepSeekExecutor:
         )
         self.timeout = timeout
         self.transport = transport
+        self.network_attempts = network_attempts
+        self.sleep = sleep
+        #: Progress sink for retries; wired up by the orchestrator.
+        self.notify: Callable[[str], None] | None = None
+        #: Token usage of the last call, as the endpoint reported it.
+        self.last_usage: dict | None = None
+        #: DeepSeek reports tokens, not money, so this stays None.
+        self.last_cost_usd: float | None = None
 
     def healthcheck(self) -> tuple[bool, str]:
         if not self.api_key:
@@ -275,6 +288,7 @@ class DeepSeekExecutor:
         spec: TaskSpec,
         attempt: int,
         previous_failure: str | None = None,
+        change_request: str | None = None,
     ) -> ExecutionResult:
         if not self.api_key:
             raise ExecutionError(missing_key_message())
@@ -287,7 +301,15 @@ class DeepSeekExecutor:
                 {"role": "system", "content": _CODER_SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": _build_prompt(spec, attempt, previous_failure),
+                    "content": _build_prompt(
+                        spec,
+                        attempt,
+                        previous_failure,
+                        change_request,
+                        # This backend cannot read the directory, so a change
+                        # to an existing site has to carry the site with it.
+                        current_files=_current_files(project_dir) if change_request else None,
+                    ),
                 },
             ],
             "response_format": {"type": "json_object"},
@@ -297,11 +319,21 @@ class DeepSeekExecutor:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "rainbow-octopus/0.1.0",
+            "User-Agent": f"rainbow-octopus/{__version__}",
         }
+        self.last_usage = None
         try:
-            raw = self.transport(self.api_url, headers, body, float(self.timeout))
+            retry_kwargs = {"sleep": self.sleep} if self.sleep else {}
+            raw = with_retries(
+                lambda: self.transport(self.api_url, headers, body, float(self.timeout)),
+                attempts=self.network_attempts,
+                notify=self.notify,
+                what=f"executor request to {self.base_url}",
+                **retry_kwargs,
+            )
             response = json.loads(raw.decode("utf-8"))
+            usage = response.get("usage") if isinstance(response, dict) else None
+            self.last_usage = usage if isinstance(usage, dict) else None
             content = response["choices"][0]["message"]["content"]
             files = _extract_files(content)
         except urllib.error.HTTPError as exc:
@@ -309,6 +341,8 @@ class DeepSeekExecutor:
             raise ExecutionError(f"{self.base_url} HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
             raise ExecutionError(f"Cannot reach {self.base_url}: {exc.reason}") from exc
+        except (TimeoutError, ConnectionError) as exc:
+            raise ExecutionError(f"{self.base_url} did not answer: {exc}") from exc
         except ExecutionError:
             raise
         except (KeyError, IndexError, TypeError, ValueError) as exc:
@@ -330,7 +364,10 @@ class DeepSeekExecutor:
             stderr="",
             command=["<deepseek>", self.model, "chat/completions"],
         )
-        _write_execution_log(project_dir, attempt, result, prefix="deepseek")
+        _write_execution_log(
+            project_dir, attempt, result, prefix="deepseek",
+            extra={"usage": self.last_usage},
+        )
         return result
 
 
@@ -371,14 +408,21 @@ class ClaudeCodeExecutor:
         claude_path: Path | None = None,
         timeout: int = 900,
         model: str | None = None,
-        max_budget_usd: float = 1.5,
+        max_budget_usd: float | None = None,
         runner: Runner = subprocess.run,
     ):
         self.claude_path = claude_path or find_claude()
         self.timeout = timeout
         self.model = model or os.environ.get("ROCTO_CLAUDE_MODEL")
+        if max_budget_usd is None:
+            try:
+                max_budget_usd = float(os.environ.get("ROCTO_CLAUDE_BUDGET_USD") or 1.5)
+            except ValueError:
+                max_budget_usd = 1.5
         self.max_budget_usd = max_budget_usd
         self.runner = runner
+        #: What the last attempt cost, as Claude Code reported it.
+        self.last_cost_usd: float | None = None
 
     def healthcheck(self) -> tuple[bool, str]:
         """Report available only when the CLI exists *and* is signed in.
@@ -448,6 +492,7 @@ class ClaudeCodeExecutor:
         spec: TaskSpec,
         attempt: int,
         previous_failure: str | None = None,
+        change_request: str | None = None,
     ) -> ExecutionResult:
         if not self.claude_path:
             raise ExecutionError(
@@ -455,8 +500,9 @@ class ClaudeCodeExecutor:
             )
         task_path = project_dir / ".rocto" / "task.json"
         before_hash = _sha256(task_path)
-        prompt = _build_prompt(spec, attempt, previous_failure)
+        prompt = _build_prompt(spec, attempt, previous_failure, change_request)
         command = self._command()
+        self.last_cost_usd = None
         try:
             completed = self.runner(
                 command,
@@ -487,9 +533,10 @@ class ClaudeCodeExecutor:
             stderr=completed.stderr,
             command=["<claude>", *command[1:]],
         )
+        self.last_cost_usd = _claude_cost(completed.stdout)
         _write_execution_log(project_dir, attempt, result, prefix="claude", extra={
             "removed_stray_paths": removed,
-            "cost_usd": _claude_cost(completed.stdout),
+            "cost_usd": self.last_cost_usd,
         })
         verdict = _claude_result_message(completed.stdout)
         if completed.returncode != 0:
@@ -557,14 +604,42 @@ class RouterExecutor:
     tried and why they lost. Order is deliberate — the strongest agentic coder
     first, the cheapest always-available one last, so a build never dies just
     because a vendor CLI is broken on this machine.
+
+    Failover used to cover only a backend that *crashed*. A backend that ran
+    fine and wrote a page that failed verification was handed the repair
+    again, and again — three attempts from the same model, repeating the same
+    blind spot. ADR-006 adds escalation: after ``escalate_after`` consecutive
+    failed verifications a backend is demoted behind the others, so the next
+    repair comes from a different model with the failure evidence in hand.
     """
 
-    def __init__(self, backends: list[tuple[str, Any]]):
+    def __init__(self, backends: list[tuple[str, Any]], escalate_after: int | None = None):
         if not backends:
             raise ExecutionError("Router needs at least one backend")
         self.backends = backends
         self.last_used: str | None = None
+        self.last_cost_usd: float | None = None
         self._health: dict[str, tuple[bool, str]] = {}
+        if escalate_after is None:
+            try:
+                escalate_after = int(os.environ.get("ROCTO_ESCALATE_AFTER") or 2)
+            except ValueError:
+                escalate_after = 2
+        self.escalate_after = max(0, escalate_after)
+        #: Consecutive failed verifications per backend.
+        self.strikes: dict[str, int] = {}
+        self._notify: Callable[[str], None] | None = None
+
+    @property
+    def notify(self) -> Callable[[str], None] | None:
+        return self._notify
+
+    @notify.setter
+    def notify(self, callback: Callable[[str], None] | None) -> None:
+        self._notify = callback
+        for _, backend in self.backends:
+            if hasattr(backend, "notify"):
+                backend.notify = callback
 
     def _availability(self, name: str, backend) -> tuple[bool, str]:
         """Probe once per build.
@@ -589,42 +664,92 @@ class RouterExecutor:
             details.append(f"{name}={'ok' if ok else 'unavailable'}")
         return healthy, "; ".join(details)
 
+    def record_verification(self, name: str | None, passed: bool) -> None:
+        """Told by the orchestrator how the page from ``name`` fared."""
+        if not name:
+            return
+        self.strikes[name] = 0 if passed else self.strikes.get(name, 0) + 1
+
+    def _demoted(self, name: str) -> bool:
+        return bool(self.escalate_after) and self.strikes.get(name, 0) >= self.escalate_after
+
+    def ordered_backends(self) -> list[tuple[str, Any]]:
+        """Configured order, with demoted backends moved to the back.
+
+        A demoted backend is not removed: if every other backend is
+        unavailable it still gets the repair, because a repeat attempt beats
+        no attempt.
+        """
+        return sorted(self.backends, key=lambda item: self._demoted(item[0]))
+
     def execute(
         self,
         project_dir: Path,
         spec: TaskSpec,
         attempt: int,
         previous_failure: str | None = None,
+        change_request: str | None = None,
     ) -> ExecutionResult:
         errors: list[str] = []
-        for name, backend in self.backends:
+        demoted = [
+            f"{name} ({self.strikes[name]} failed verification"
+            f"{'s' if self.strikes[name] != 1 else ''} in a row)"
+            for name, _ in self.backends
+            if self._demoted(name)
+        ]
+        self.last_cost_usd = None
+        for name, backend in self.ordered_backends():
             available, detail = self._availability(name, backend)
             if not available:
                 errors.append(f"{name}: skipped ({detail})")
                 continue
+            extra = {"change_request": change_request} if change_request else {}
             try:
-                result = backend.execute(project_dir, spec, attempt, previous_failure)
+                result = backend.execute(project_dir, spec, attempt, previous_failure, **extra)
             except ExecutionError as exc:
                 errors.append(f"{name}: {exc}")
-                _clear_generated_files(project_dir)
+                self.last_cost_usd = _add_cost(
+                    self.last_cost_usd, getattr(backend, "last_cost_usd", None)
+                )
+                if not change_request:
+                    # A new build starts clean for the next backend; a change
+                    # to an existing site must keep the site it is changing.
+                    _clear_generated_files(project_dir)
                 continue
             self.last_used = name
-            _write_router_log(project_dir, attempt, name, errors)
+            self.last_cost_usd = _add_cost(
+                self.last_cost_usd, getattr(backend, "last_cost_usd", None)
+            )
+            _write_router_log(project_dir, attempt, name, errors, demoted)
             return result
-        _write_router_log(project_dir, attempt, None, errors)
+        self.last_used = None
+        _write_router_log(project_dir, attempt, None, errors, demoted)
         raise ExecutionError(
             "every executor failed:\n  " + "\n  ".join(errors or ["no backend available"])
         )
 
 
+def _add_cost(total: float | None, more: float | None) -> float | None:
+    if more is None:
+        return total
+    return (total or 0.0) + more
+
+
 def _write_router_log(
-    project_dir: Path, attempt: int, winner: str | None, errors: list[str]
+    project_dir: Path,
+    attempt: int,
+    winner: str | None,
+    errors: list[str],
+    demoted: list[str] | None = None,
 ) -> None:
     log_dir = project_dir / ".rocto" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {"winner": winner, "skipped_or_failed": errors}
+    if demoted:
+        payload["demoted"] = demoted
     (log_dir / f"router-attempt-{attempt}.json").write_text(
         json.dumps(
-            {"winner": winner, "skipped_or_failed": errors},
+            payload,
             ensure_ascii=False,
             indent=2,
         ),
@@ -633,7 +758,7 @@ def _write_router_log(
 
 
 #: Files the verifier legitimately writes into the output directory.
-VERIFIER_ARTIFACTS = ("screenshot.png", "acceptance-report.json")
+VERIFIER_ARTIFACTS = ("screenshot.png", "acceptance-report.json", "report.html")
 
 
 def _enforce_output_boundary(project_dir: Path) -> list[str]:
@@ -761,15 +886,18 @@ def auto_order() -> tuple[str, ...]:
 AUTO_ORDER = DEFAULT_AUTO_ORDER
 
 
-def make_executor(backend: str = "auto", timeout: int = 1200):
+def make_executor(
+    backend: str = "auto", timeout: int = 1200, escalate_after: int | None = None
+):
     """Single place where an external code generator is chosen.
 
     ``auto`` builds a RouterExecutor over :func:`auto_order`. Any single name
-    pins one backend.
+    pins one backend, and a pinned backend is never escalated away from.
     """
     if backend == "auto":
         return RouterExecutor(
-            [(name, make_executor(name, timeout)) for name in auto_order()]
+            [(name, make_executor(name, timeout)) for name in auto_order()],
+            escalate_after=escalate_after,
         )
     if backend == "deepseek":
         return DeepSeekExecutor(timeout=min(timeout, 600))
@@ -804,8 +932,21 @@ Rules:
 """.strip()
 
 
+def _current_files(project_dir: Path) -> dict[str, str]:
+    files = {}
+    for name in GENERATED_FILES:
+        path = project_dir / name
+        if path.is_file() and path.stat().st_size <= MAX_FILE_BYTES:
+            files[name] = path.read_text(encoding="utf-8", errors="replace")
+    return files
+
+
 def _build_prompt(
-    spec: TaskSpec, attempt: int, previous_failure: str | None
+    spec: TaskSpec,
+    attempt: int,
+    previous_failure: str | None,
+    change_request: str | None = None,
+    current_files: dict[str, str] | None = None,
 ) -> str:
     spec_json = json.dumps(spec.to_dict(), ensure_ascii=False, indent=2)
     retry = ""
@@ -814,6 +955,22 @@ def _build_prompt(
 This is repair attempt {attempt}. The deterministic verifier reported:
 {previous_failure}
 Fix every reported failure without removing already working behavior.
+"""
+    change = ""
+    if change_request:
+        change = f"""
+This website already exists and passed its previous acceptance tests. Change
+it to satisfy this request, editing the existing files rather than starting
+over, and keep everything the specification still describes working:
+CHANGE REQUEST: {change_request}
+"""
+        if current_files:
+            listing = "\n\n".join(
+                f"--- {name} ---\n{text}" for name, text in current_files.items()
+            )
+            change += f"""
+The current files, which you must return in full after your changes:
+{listing}
 """
     return f"""
 Build the static website described by the task specification below.
@@ -831,7 +988,7 @@ Hard boundaries:
 
 TASK SPECIFICATION:
 {spec_json}
-{retry}
+{change}{retry}
 At the end, briefly state which files were created and what was verified.
 """.strip()
 

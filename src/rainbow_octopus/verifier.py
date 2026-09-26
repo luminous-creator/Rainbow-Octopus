@@ -214,7 +214,7 @@ def _browser_candidates(system: str) -> tuple[list[Path | None], tuple[str, ...]
         return fixed, ("google-chrome", "chromium", "microsoft-edge", "brave")
 
     # Linux and other Unix-like hosts use the conventional executable names.
-    return [], (
+    return [Path("/opt/google/chrome/chrome"), Path("/snap/bin/chromium")], (
         "google-chrome",
         "google-chrome-stable",
         "chromium",
@@ -238,12 +238,67 @@ def find_browser() -> Path | None:
             if candidate.is_file():
                 return candidate
 
-    fixed, path_names = _browser_candidates(platform.system())
+    system = platform.system()
+    fixed, path_names = _browser_candidates(system)
     candidates: list[Path | None] = list(fixed)
     for name in path_names:
         found = shutil.which(name)
         candidates.append(Path(found) if found else None)
+    # Last resort, and deliberately last: a browser that Playwright downloaded
+    # for some other project. Containers and CI images often have nothing else.
+    candidates.extend(_playwright_candidates(system))
     return next((path for path in candidates if path and path.is_file()), None)
+
+
+#: Relative layout of a Playwright-managed Chromium, per platform. Newer
+#: Playwright releases append an architecture (``chrome-linux64``,
+#: ``chrome-mac-arm64``, ``chrome-win64``), hence the trailing wildcards.
+_PLAYWRIGHT_LAYOUTS = {
+    "Windows": ("chrome-win*", "chrome.exe"),
+    "Darwin": ("chrome-mac*", "Chromium.app/Contents/MacOS/Chromium"),
+    "Linux": ("chrome-linux*", "chrome"),
+}
+
+
+def _playwright_roots(system: str) -> list[Path]:
+    roots: list[Path] = []
+    configured = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if configured and configured != "0":
+        roots.append(Path(configured).expanduser())
+    if system == "Windows":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            roots.append(Path(local) / "ms-playwright")
+    elif system == "Darwin":
+        roots.append(Path.home() / "Library" / "Caches" / "ms-playwright")
+    else:
+        roots.append(Path.home() / ".cache" / "ms-playwright")
+    return roots
+
+
+def _playwright_candidates(system: str) -> list[Path]:
+    """Full Chromium builds that Playwright installed, newest revision first.
+
+    ``chromium_headless_shell-*`` is skipped on purpose: it has no
+    ``--screenshot`` parity guarantees and is not a browser a user would
+    recognise in ``rocto doctor`` output.
+    """
+    platform_dir, executable = _PLAYWRIGHT_LAYOUTS.get(
+        system, _PLAYWRIGHT_LAYOUTS["Linux"]
+    )
+    found: list[tuple[int, Path]] = []
+    for root in _playwright_roots(system):
+        try:
+            builds = list(root.glob("chromium-*"))
+        except OSError:
+            continue
+        for build in builds:
+            revision = build.name.rsplit("-", 1)[-1]
+            if not revision.isdigit():
+                continue
+            for platform_root in sorted(build.glob(platform_dir)):
+                found.append((int(revision), platform_root / executable))
+    return [path for _, path in sorted(found, key=lambda item: -item[0])]
 
 
 def find_edge() -> Path | None:
@@ -292,6 +347,45 @@ def _graphics_flags(path: Path) -> tuple[str, ...]:
             "--disable-features=Vulkan,CanvasOopRasterization,UseSkiaRenderer",
         )
     return ()
+
+
+def _sandbox_flags(system: str | None = None) -> tuple[str, ...]:
+    """KI-009: Chromium refuses to start as root unless its sandbox is off.
+
+    Docker containers, most CI containers and cloud dev boxes run as root, and
+    there Chromium exits immediately with "Running as root without
+    --no-sandbox is not supported". The harness then waits out its full
+    timeout and reports a failure that has nothing to do with the page.
+
+    The page under test is our own generated, offline-scanned, locally served
+    code, so running it without Chromium's sandbox as root costs little; not
+    running it at all makes verification impossible. ``--disable-dev-shm-usage``
+    is added alongside because container ``/dev/shm`` is often 64 MB, which
+    crashes renderers. ``ROCTO_BROWSER_NO_SANDBOX=1`` forces the same flags
+    for hosts where unprivileged sandboxes are blocked for a non-root user.
+    """
+    host = system or platform.system()
+    if host != "Linux":
+        return ()
+    forced = os.environ.get("ROCTO_BROWSER_NO_SANDBOX", "").strip().lower()
+    geteuid = getattr(os, "geteuid", None)
+    is_root = bool(geteuid) and geteuid() == 0
+    if is_root or forced in {"1", "true", "yes", "on"}:
+        return ("--no-sandbox", "--disable-dev-shm-usage")
+    return ()
+
+
+#: Environment variables that must never reach the browser process. The page
+#: under test is model-written; nothing it can reach should hold a credential.
+_SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+
+
+def _browser_env() -> dict[str, str]:
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if not any(marker in name.upper() for marker in _SECRET_MARKERS)
+    }
 
 
 class BrowserVerifier:
@@ -553,6 +647,7 @@ setTimeout(() => __roctoReport([{{
             # then blocks forever. Old headless is stable.
             _headless_flag(self.browser_path),
             *_graphics_flags(self.browser_path),
+            *_sandbox_flags(),
             "--disable-extensions",
             "--no-first-run",
             "--no-default-browser-check",
@@ -577,6 +672,7 @@ setTimeout(() => __roctoReport([{{
                 command,
                 stdout=subprocess.DEVNULL,
                 stderr=log_file or subprocess.DEVNULL,
+                env=_browser_env(),
             )
         except OSError as exc:
             if log_file:
@@ -616,6 +712,7 @@ setTimeout(() => __roctoReport([{{
             # KI-001: see _run_edge_harness — old headless required on Windows 11.
             _headless_flag(self.browser_path),
             *_graphics_flags(self.browser_path),
+            *_sandbox_flags(),
             "--hide-scrollbars",
             "--no-first-run",
             f"--user-data-dir={profile}",
@@ -634,6 +731,7 @@ setTimeout(() => __roctoReport([{{
                 errors="replace",
                 timeout=self.timeout,
                 check=False,
+                env=_browser_env(),
             )
             ok = (
                 result.returncode == 0
@@ -671,6 +769,7 @@ setTimeout(() => __roctoReport([{{
                 command,
                 stdout=subprocess.DEVNULL,
                 stderr=log_file or subprocess.DEVNULL,
+                env=_browser_env(),
             )
         except OSError as exc:
             if log_file:

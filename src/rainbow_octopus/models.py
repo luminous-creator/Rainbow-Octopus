@@ -86,7 +86,7 @@ class TestCase:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TestCase":
         raw_steps = data.get("steps")
-        if not isinstance(raw_steps, list) or not 1 <= len(raw_steps) <= 20:
+        if not isinstance(raw_steps, (list, tuple)) or not 1 <= len(raw_steps) <= 20:
             raise SpecValidationError("Each test must contain 1-20 steps")
         return cls(
             name=_required_text(data, "name", 120),
@@ -111,14 +111,14 @@ class TaskSpec:
         constraints = _text_list(data.get("constraints"), "constraints", 1, 12, 240)
 
         raw_ui = data.get("ui_contract")
-        if not isinstance(raw_ui, list) or not 1 <= len(raw_ui) <= 30:
+        if not isinstance(raw_ui, (list, tuple)) or not 1 <= len(raw_ui) <= 30:
             raise SpecValidationError("ui_contract must contain 1-30 elements")
         ui = tuple(UIElement.from_dict(item) for item in raw_ui)
         if len({item.test_id for item in ui}) != len(ui):
             raise SpecValidationError("ui_contract contains duplicate test_id values")
 
         raw_tests = data.get("tests")
-        if not isinstance(raw_tests, list) or not 1 <= len(raw_tests) <= 10:
+        if not isinstance(raw_tests, (list, tuple)) or not 1 <= len(raw_tests) <= 10:
             raise SpecValidationError("tests must contain 1-10 test cases")
         tests = tuple(TestCase.from_dict(item) for item in raw_tests)
         if sum(len(test.steps) for test in tests) > 50:
@@ -170,6 +170,28 @@ class AcceptanceReport:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AcceptanceReport":
+        checks = [
+            AcceptanceCheck(
+                str(item.get("name", "")),
+                bool(item.get("passed")),
+                str(item.get("detail", "")),
+            )
+            for item in data.get("checks", [])
+            if isinstance(item, dict)
+        ]
+        return cls(
+            passed=bool(data.get("passed")),
+            checks=checks,
+            console_errors=[str(e) for e in data.get("console_errors", [])],
+            screenshot=data.get("screenshot"),
+        )
+
+    @property
+    def passed_count(self) -> int:
+        return sum(check.passed for check in self.checks)
+
     def failure_summary(self) -> str:
         failed = [check for check in self.checks if not check.passed]
         lines = [f"- {check.name}: {check.detail}" for check in failed]
@@ -198,7 +220,9 @@ def _optional_text(value: Any, name: str, limit: int) -> str | None:
 def _text_list(
     value: Any, name: str, minimum: int, maximum: int, item_limit: int
 ) -> tuple[str, ...]:
-    if not isinstance(value, list) or not minimum <= len(value) <= maximum:
+    # Tuples too: ``TaskSpec.to_dict()`` (dataclasses.asdict) keeps them, and
+    # a spec must survive a round trip without going through JSON.
+    if not isinstance(value, (list, tuple)) or not minimum <= len(value) <= maximum:
         raise SpecValidationError(f"{name} must contain {minimum}-{maximum} items")
     result = []
     for item in value:

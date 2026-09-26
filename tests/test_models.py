@@ -27,6 +27,10 @@ class TaskSpecTests(unittest.TestCase):
         with self.assertRaises(SpecValidationError):
             TaskSpec.from_dict(data)
 
+    def test_round_trips_without_json(self):
+        spec = sample_spec()
+        self.assertEqual(TaskSpec.from_dict(spec.to_dict()), spec)
+
 
 if __name__ == "__main__":
     unittest.main()

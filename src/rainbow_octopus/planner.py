@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 import json
+import os
+import subprocess
+import time
 import urllib.error
 import urllib.request
 
+from . import __version__
 from .contract import ContractReport, check_contract
 from .models import SpecValidationError, TaskSpec
 from .provider import (
@@ -13,6 +18,7 @@ from .provider import (
     missing_key_message,
     resolve_api_key,
     resolve_base_url,
+    with_retries,
 )
 
 
@@ -31,28 +37,23 @@ def _urlopen_transport(
         return response.read()
 
 
-class DeepSeekPlanner:
-    """Plans against any OpenAI-compatible `/chat/completions` endpoint.
+class _RepairingPlanner:
+    """The plan-check-repair loop shared by every planner backend.
 
-    Named for its default provider, not for a dependency on one — see
-    `provider.py` for how the endpoint and key are resolved.
+    The executor already gets its failures handed back to it as evidence and
+    retries. The planner did not: whatever it produced first became the
+    definition of "done" for the whole build. That asymmetry is what let
+    ``pomodoro-2`` ship a contract that could be satisfied without building
+    the requested feature, so the same repair loop applies here.
+
+    Subclasses implement :meth:`_complete`, which turns a conversation into
+    the model's raw text reply.
     """
 
-    def __init__(
-        self,
-        api_key: str | None = None,
-        model: str = "deepseek-v4-flash",
-        timeout: float = 90,
-        transport: Transport = _urlopen_transport,
-        max_attempts: int = 3,
-        base_url: str | None = None,
-    ):
-        self.base_url = resolve_base_url(base_url)
-        self.api_url = completions_url(self.base_url)
-        self.api_key = resolve_api_key(api_key)
-        self.model = model
-        self.timeout = timeout
-        self.transport = transport
+    #: Shown in progress output and the run log.
+    label = "planner"
+
+    def __init__(self, max_attempts: int = 3):
         if not 1 <= max_attempts <= 5:
             raise ValueError("max_attempts must be between 1 and 5")
         self.max_attempts = max_attempts
@@ -61,65 +62,114 @@ class DeepSeekPlanner:
         self.last_warnings: tuple[str, ...] = ()
         #: How many requests the accepted plan took, for the run log.
         self.last_attempts: int = 0
+        #: Reported spend of the last plan() call, when the backend knows it.
+        self.last_cost_usd: float | None = None
+        #: Progress sink for retries; wired up by the orchestrator.
+        self.notify: Callable[[str], None] | None = None
+
+    def ensure_ready(self) -> None:
+        """Raise PlanningError early when this planner cannot possibly work."""
 
     def plan(self, idea: str) -> TaskSpec:
-        """Return a spec that is structurally valid *and* a usable contract.
+        """Return a spec that is structurally valid *and* a usable contract."""
+        return self._plan_loop([{"role": "user", "content": idea}])
 
-        The executor already gets its failures handed back to it as evidence
-        and retries. The planner did not: whatever it produced first became the
-        definition of "done" for the whole build. That asymmetry is what let
-        ``pomodoro-2`` ship a contract that could be satisfied without building
-        the requested feature, so the same repair loop now applies here.
-        """
-        if not self.api_key:
-            raise PlanningError(missing_key_message())
+    def refine(self, spec: TaskSpec, request: str) -> TaskSpec:
+        """Return an updated specification for a change to an existing build."""
+        current = json.dumps(spec.to_dict(), ensure_ascii=False, indent=2)
+        return self._plan_loop(
+            [
+                {
+                    "role": "user",
+                    "content": _REFINE_TEMPLATE.format(spec=current, request=request),
+                }
+            ]
+        )
 
-        feedback: str | None = None
+    def _plan_loop(self, conversation: list[dict[str, str]]) -> TaskSpec:
+        self.ensure_ready()
+        self.last_cost_usd = None
         last_problem = "unknown"
         for attempt in range(1, self.max_attempts + 1):
             self.last_attempts = attempt
-            spec, report, last_problem = self._attempt(idea, feedback)
+            content = self._complete(conversation)
+            spec, report, last_problem = self._evaluate(content)
             if spec is not None and report is not None:
                 self.last_warnings = report.warnings
                 return spec
-            feedback = _REPAIR_TEMPLATE.format(problems=last_problem)
+            # The rejected reply goes back into the conversation, so "keep
+            # everything that was not listed" refers to something the model
+            # can actually see.
+            conversation = [
+                *conversation,
+                {"role": "assistant", "content": _as_text(content)},
+                {"role": "user", "content": _REPAIR_TEMPLATE.format(problems=last_problem)},
+            ]
 
         raise PlanningError(
             f"Planner could not produce a usable contract in {self.max_attempts} "
             f"attempts. Last problem:\n{last_problem}"
         )
 
-    def _attempt(
-        self, idea: str, feedback: str | None
+    def _evaluate(
+        self, content: Any
     ) -> tuple[TaskSpec | None, ContractReport | None, str]:
-        """One request. Returns the spec on success, otherwise why it failed."""
         try:
-            content = self._request(idea, feedback)
             spec = TaskSpec.from_dict(_extract_json(content))
         except SpecValidationError as exc:
             return None, None, f"the specification was rejected as invalid: {exc}"
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise PlanningError(f"{self.base_url} HTTP {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise PlanningError(f"Cannot reach {self.base_url}: {exc.reason}") from exc
-        except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise PlanningError(
-                f"{self.base_url} returned an invalid response: {exc}"
-            ) from exc
-
+        except (json.JSONDecodeError, PlanningError) as exc:
+            return None, None, f"the reply was not a single JSON object: {exc}"
         report = check_contract(spec)
         if not report.ok:
             return None, None, report.feedback()
         return spec, report, ""
 
-    def _request(self, idea: str, feedback: str | None) -> Any:
-        messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": idea},
-        ]
-        if feedback:
-            messages.append({"role": "user", "content": feedback})
+    def _complete(self, conversation: list[dict[str, str]]) -> Any:
+        raise NotImplementedError
+
+
+class DeepSeekPlanner(_RepairingPlanner):
+    """Plans against any OpenAI-compatible `/chat/completions` endpoint.
+
+    Named for its default provider, not for a dependency on one — see
+    `provider.py` for how the endpoint and key are resolved.
+    """
+
+    label = "api"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "deepseek-v4-flash",
+        timeout: float | None = None,
+        transport: Transport = _urlopen_transport,
+        max_attempts: int = 3,
+        base_url: str | None = None,
+        network_attempts: int = 3,
+        sleep: Callable[[float], None] = time.sleep,
+    ):
+        super().__init__(max_attempts)
+        self.base_url = resolve_base_url(base_url)
+        self.api_url = completions_url(self.base_url)
+        self.api_key = resolve_api_key(api_key)
+        self.model = model
+        if timeout is None:
+            timeout = float(os.environ.get("ROCTO_PLANNER_TIMEOUT") or 180)
+        self.timeout = timeout
+        self.transport = transport
+        self.network_attempts = network_attempts
+        self.sleep = sleep
+
+    def describe(self) -> str:
+        return self.model
+
+    def ensure_ready(self) -> None:
+        if not self.api_key:
+            raise PlanningError(missing_key_message())
+
+    def _complete(self, conversation: list[dict[str, str]]) -> Any:
+        messages = [{"role": "system", "content": _SYSTEM_PROMPT}, *conversation]
         payload = {
             "model": self.model,
             "messages": messages,
@@ -130,11 +180,182 @@ class DeepSeekPlanner:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "rainbow-octopus/0.1.0",
+            "User-Agent": f"rainbow-octopus/{__version__}",
         }
-        raw = self.transport(self.api_url, headers, body, self.timeout)
-        response = json.loads(raw.decode("utf-8"))
-        return response["choices"][0]["message"]["content"]
+        try:
+            raw = with_retries(
+                lambda: self.transport(self.api_url, headers, body, self.timeout),
+                attempts=self.network_attempts,
+                notify=self.notify,
+                sleep=self.sleep,
+                what=f"planner request to {self.base_url}",
+            )
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            raise PlanningError(f"{self.base_url} HTTP {exc.code}: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise PlanningError(f"Cannot reach {self.base_url}: {exc.reason}") from exc
+        except (TimeoutError, ConnectionError) as exc:
+            raise PlanningError(f"{self.base_url} did not answer: {exc}") from exc
+        try:
+            response = json.loads(raw.decode("utf-8"))
+            return response["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise PlanningError(
+                f"{self.base_url} returned an invalid response: {exc}"
+            ) from exc
+
+
+class ClaudeCodePlanner(_RepairingPlanner):
+    """Write the task specification with a signed-in Claude Code CLI.
+
+    ADR-003 made the endpoint configurable, but planning still needed *some*
+    API key. Someone whose only AI account is a Claude subscription had
+    Claude Code signed in, able to write the whole site, and still could not
+    run a build. This backend closes that gap: ``claude -p`` with every tool
+    disabled (``--tools ""``) is a plain text-in, text-out call billed to the
+    subscription that is already there.
+    """
+
+    label = "claude"
+
+    def __init__(
+        self,
+        claude_path: Path | None = None,
+        timeout: float | None = None,
+        model: str | None = None,
+        max_budget_usd: float = 0.5,
+        max_attempts: int = 3,
+        runner: Callable[..., Any] = subprocess.run,
+    ):
+        super().__init__(max_attempts)
+        from .executor import find_claude  # local import: executor imports models only
+
+        self.claude_path = claude_path or find_claude()
+        if timeout is None:
+            timeout = float(os.environ.get("ROCTO_PLANNER_TIMEOUT") or 180)
+        self.timeout = timeout
+        self.model = model or os.environ.get("ROCTO_CLAUDE_MODEL")
+        self.max_budget_usd = max_budget_usd
+        self.runner = runner
+
+    def describe(self) -> str:
+        return f"Claude Code{f' ({self.model})' if self.model else ''}"
+
+    def ensure_ready(self) -> None:
+        if not self.claude_path:
+            raise PlanningError(
+                "Claude Code CLI not found. Install it, set ROCTO_CLAUDE_BIN, "
+                "or configure an API key for the api planner."
+            )
+
+    def _command(self) -> list[str]:
+        command = [
+            str(self.claude_path),
+            "-p",
+            "--output-format",
+            "json",
+            "--tools",
+            "",
+            "--no-session-persistence",
+            "--max-budget-usd",
+            str(self.max_budget_usd),
+            "--system-prompt",
+            _SYSTEM_PROMPT,
+        ]
+        if self.model:
+            command += ["--model", self.model]
+        return command
+
+    def _complete(self, conversation: list[dict[str, str]]) -> Any:
+        prompt = _flatten_conversation(conversation)
+        try:
+            completed = self.runner(
+                self._command(),
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                timeout=self.timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise PlanningError(
+                f"Claude Code planner timed out after {self.timeout:.0f} seconds"
+            ) from exc
+        except OSError as exc:
+            raise PlanningError(f"Cannot start Claude Code: {exc}") from exc
+        try:
+            event = json.loads((completed.stdout or "").strip() or "{}")
+        except json.JSONDecodeError:
+            event = {}
+        if not isinstance(event, dict):
+            event = {}
+        cost = event.get("total_cost_usd")
+        if isinstance(cost, (int, float)):
+            self.last_cost_usd = (self.last_cost_usd or 0.0) + float(cost)
+        result = event.get("result")
+        if completed.returncode != 0 or event.get("is_error") or not isinstance(result, str):
+            detail = (
+                result if isinstance(result, str) and result.strip()
+                else (completed.stderr or completed.stdout or "").strip()[-500:]
+            )
+            raise PlanningError(
+                f"Claude Code planner failed (exit {completed.returncode}): "
+                f"{detail or 'no output'}"
+            )
+        return result
+
+
+def _flatten_conversation(conversation: list[dict[str, str]]) -> str:
+    """Claude Code -p takes one prompt, so earlier turns are quoted into it."""
+    if len(conversation) == 1:
+        return conversation[0]["content"]
+    parts = []
+    for message in conversation:
+        speaker = "Your previous reply" if message["role"] == "assistant" else "User"
+        parts.append(f"=== {speaker} ===\n{message['content']}")
+    return "\n\n".join(parts)
+
+
+def _as_text(content: Any) -> str:
+    return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+
+
+PLANNER_CHOICES = ("auto", "api", "claude")
+
+
+def make_planner(choice: str | None = None, model: str | None = None) -> _RepairingPlanner:
+    """Pick the planner backend (ADR-004).
+
+    ``auto`` prefers the API planner when a key is configured — it is cheap
+    and spends no subscription quota — and otherwise falls back to a Claude
+    Code CLI that is installed and signed in.
+    """
+    from .executor import ClaudeCodeExecutor, find_claude
+
+    choice = (choice or os.environ.get("ROCTO_PLANNER") or "auto").strip().lower()
+    if choice not in PLANNER_CHOICES:
+        raise PlanningError(
+            f"Unknown planner {choice!r}; choose one of: {', '.join(PLANNER_CHOICES)}"
+        )
+    api_model = model or os.environ.get("ROCTO_DEEPSEEK_MODEL") or "deepseek-v4-flash"
+    if choice == "api":
+        return DeepSeekPlanner(model=api_model)
+    if choice == "claude":
+        return ClaudeCodePlanner()
+    if resolve_api_key():
+        return DeepSeekPlanner(model=api_model)
+    claude = find_claude()
+    if claude:
+        ok, _ = ClaudeCodeExecutor(claude).healthcheck()
+        if ok:
+            return ClaudeCodePlanner(claude_path=claude)
+    # Nothing usable: return the API planner so the error names the API key,
+    # the one fix that works everywhere.
+    return DeepSeekPlanner(model=api_model)
 
 
 def _extract_json(content: Any) -> dict[str, Any]:
@@ -211,7 +432,8 @@ counter is at zero is not a test of counting.
 
 
 _REPAIR_TEMPLATE = """
-The specification you just produced was rejected before any code was written.
+The specification you just produced (quoted above) was rejected before any
+code was written.
 
 {problems}
 
@@ -219,3 +441,22 @@ Return a corrected JSON object. Keep everything that was not listed above,
 change only what is needed to resolve each point, and output JSON only.
 """.strip()
 
+
+
+_REFINE_TEMPLATE = """
+This is a change request for a website that already exists and already passes
+the acceptance specification below.
+
+CURRENT SPECIFICATION:
+{spec}
+
+CHANGE REQUEST:
+{request}
+
+Return the complete updated specification as one JSON object of the same
+shape. Keep every existing ui_contract element and test that the change does
+not make obsolete, so they keep guarding behaviour that already works. Add
+elements and tests for what the change introduces; the change itself is what
+most needs an assertion. Update title, goal and features to describe the
+site after the change.
+""".strip()
