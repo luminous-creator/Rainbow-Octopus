@@ -411,6 +411,13 @@ Rules:
 - Use fill/click actions before assertions when testing interactions.
 - Include a final no_console_errors assertion.
 - wait may be at most 3000 ms. Do not output code, Markdown, or shell commands.
+- Each test is independent: it starts from a freshly loaded page with empty
+  localStorage and sessionStorage. Never rely on state from an earlier test;
+  create whatever a test needs (for example, add an item) inside that test.
+- A selector matches the FIRST element with that data-testid. Elements that
+  repeat (list rows, cards) may share one test_id; assert on the first one.
+- attribute_equals with attribute "value" or "checked" reads the element's
+  live state (what the user typed, whether the box is ticked).
 
 Two rules about what makes an assertion worth writing. Both are enforced, and
 a specification that breaks either one is sent back to you:

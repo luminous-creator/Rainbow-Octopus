@@ -464,6 +464,147 @@ open in the sense that the second and third platforms are supported but
 unproven. Running `test_real_browser_interaction_and_screenshot` once on a
 Linux host with Chromium installed, and once on macOS, is what closes that gap.
 
+### Update — 2026-09-26
+
+The loop has now been observed on Linux: `test_real_browser_interaction_and_screenshot`
+passed with Playwright's Chromium 1194 on a Linux cloud container, running as
+root — after KI-009 below, which it first failed on. Two end-to-end builds went
+through the same path with real models (see ADR-004). macOS is still
+unobserved by anyone on this project.
+
+---
+
+## KI-009 — Chromium will not start as root, so verification failed in every container — **FIXED**
+
+- **Observed:** 2026-09-26, first run in a Linux cloud container
+- **Severity:** blocking in Docker, most CI containers and cloud dev boxes
+
+### Symptom
+
+```text
+FAIL browser_run  harness did not report within 30s; edge stderr:
+  ERROR:zygote_host_impl_linux.cc(101) Running as root without --no-sandbox is not supported.
+FAIL screenshot   screenshot was not created within 30s
+```
+
+Chromium exited immediately. The verifier then waited out its whole timeout
+twice and reported a failure that had nothing to do with the page — on every
+attempt, so the repair loop spent all of them on a page that was fine. The
+same container also showed `[FAIL] browser  not found`, although Playwright had
+installed Chromium under `/opt/pw-browsers`.
+
+### Fix
+
+- `_sandbox_flags()` adds `--no-sandbox --disable-dev-shm-usage` on Linux when
+  running as root, or when `ROCTO_BROWSER_NO_SANDBOX=1` (for hosts that block
+  unprivileged user namespaces). The page under test is rocto's own generated,
+  offline-scanned, locally served code; not being able to run it at all is the
+  worse trade.
+- `find_browser()` falls back to Playwright-managed Chromium
+  (`PLAYWRIGHT_BROWSERS_PATH`, then the per-platform `ms-playwright` cache),
+  newest revision first and after every system browser.
+- Hardening that came with it: the browser process is started with an
+  environment that has every `*KEY*`, `*TOKEN*`, `*SECRET*`, `*PASSWORD*` and
+  `*CREDENTIAL*` variable removed. Model-written code runs in that browser.
+
+A CI job (`container-as-root`) now runs the full suite, including the real
+browser test, as root inside the Playwright image, so this cannot come back
+unnoticed.
+
+---
+
+## KI-010 — Every repeat verification shipped the previous attempt's screenshot — **FIXED**
+
+- **Observed:** 2026-09-26, auditing the first live `rocto refine`
+- **Severity:** silent. The report said 28/28 and showed the wrong page.
+
+### Symptom
+
+A refine added a "Skip" button and passed every check. `screenshot.png` did
+not show the button: its timestamp was the original build's.
+
+### Root cause
+
+For non-Edge browsers the screenshot is complete when the output file is
+non-empty and stops changing (Chrome can linger after writing it). The output
+path was `screenshot.png` in the project — which, on any second verification,
+already held the last attempt's image. The wait loop saw a stable non-empty
+file at once, stopped the browser before it wrote anything, and reported
+success. It predates this round of work: any repair attempt on Chrome,
+Chromium or Brave delivered attempt 1's screenshot; `resume` and `refine` only
+made it common.
+
+### Fix
+
+The capture goes to a fresh path in the verifier's temporary directory and is
+copied into the project only on success, and `verify()` removes any existing
+`screenshot.png` before it starts, so a run that stops early or fails to
+capture shows no screenshot rather than a wrong one. Covered by two
+regression tests in `ScreenshotIsolationTests`; the fix was then confirmed by
+re-verifying the refined build, whose screenshot now shows the button.
+
+---
+
+## KI-011 — Independent tests shared one page, so correct pages failed — **FIXED**
+
+- **Observed:** 2026-09-26, rehearsing the issue workflow with the benchmark
+  idea 做一个中文待办清单网页，可以添加、完成、筛选和删除任务
+- **Severity:** systemic. Any contract with more than one stateful test could
+  be unsatisfiable by a correct page, and every repair attempt was spent on it.
+
+### Symptom
+
+Three attempts, all failed, all by Claude Code:
+
+```text
+FAIL 筛选…:text_visible   expected=暂无任务; actual=暂无任务
+FAIL 删除任务后…:click     Error: selector not found
+FAIL 添加任务…:attribute_equals  expected=; actual=null
+FAIL testid_contract      missing: todo-item, todo-checkbox, todo-delete-btn   (attempt 1)
+```
+
+Re-verifying the third attempt's page with the fixed verifier: **33/33.** The
+page had been correct; the verifier was wrong in four ways.
+
+### Root causes
+
+1. **Shared state.** The planner writes each test as an independent case
+   ("add a task, delete it, the list shows 暂无任务"). The harness ran all tests
+   back to back in one page, so test 4 started with test 1–3's tasks and test
+   3's filter still applied. No correct todo list could satisfy that contract.
+2. **A misleading detail.** `text_visible` also requires the element to be
+   visible, but the failure said only `expected=暂无任务; actual=暂无任务` — the
+   repair agent was told the text matched and could not see why it failed.
+3. **`attribute_equals value` read markup.** `getAttribute("value")` on an input
+   is the HTML attribute (`null`), not what the input contains.
+4. **Script-rendered elements counted as missing.** `testid_contract` looked for
+   every `data-testid` in index.html; list rows exist only once script.js
+   creates them. Attempt 1 was failed before the browser even started, and the
+   repair instruction invited adding hidden placeholder elements.
+
+### Fix
+
+1. Each test runs in its own page load (`index.html?rocto_test=i`), with
+   localStorage and sessionStorage cleared before the page's scripts run. Each
+   load posts its part of the verdict; the local server combines the parts in
+   test order. The harness budget grows with the contract's own waits.
+2. Failure details say `element is hidden` or `element not found`.
+3. `attribute_equals` on `value` or `checked` reads the live property.
+4. A testid counts as declared when script.js creates it — in generated
+   markup, `dataset.testid`, `setAttribute`, or a string constant — after
+   every `[data-testid=…]` *lookup* is removed, so querying an element never
+   counts as creating it.
+5. The planner and executor prompts now state the semantics: tests are
+   independent and start from a fresh page with empty storage; the executor is
+   no longer told never to use localStorage.
+6. `rocto resume` re-verifies a complete page on disk before paying for a new
+   one. The todo build above was resumed to 33/33 in 27 seconds, at no cost.
+
+Covered by `test_every_test_starts_from_a_fresh_page` (a real browser: a page
+that keeps its count in localStorage and renders rows from script.js, with two
+identical tests that each expect a count of 1), plus tests for part
+aggregation, the harness budget and testid declaration.
+
 ---
 
 ## ADR-001 — v0.1 can generate the site with a single DeepSeek call
@@ -563,3 +704,146 @@ mode; silently accepting a malformed specification would not be.
 **Not done.** The model name is still resolved separately (`--model`,
 `ROCTO_DEEPSEEK_MODEL`), so pointing at another provider means setting both.
 Worth unifying once there is evidence anyone is doing it.
+
+
+---
+
+## ADR-004 — Config files feed environment variables; Claude Code can plan
+
+**Decision.** `rocto.toml` in the working directory and a user config
+(`$ROCTO_HOME/config.toml`, default `~/.config/rocto/` or `%APPDATA%\rocto\`)
+are read at start-up and used only to *fill unset environment variables*.
+Precedence: CLI flag > environment > project file > user file > built-in.
+`rocto config` shows every setting, its value and its source; `rocto init`
+writes a commented template.
+
+**Why this shape.** Every module already reads environment variables, and CI
+jobs rely on them. Making files a source of defaults for those variables
+changes nothing downstream, keeps every documented variable working, and makes
+the override rule obvious: an explicit variable always wins over a checked-in
+file.
+
+**API keys are refused in files.** `api_key = "..."` is a config error that
+explains why. `api_key_env = "OPENROUTER_API_KEY"` names the variable that holds
+the key instead, so a config file is always safe to commit.
+
+**Claude Code as a planner.** `--planner auto|api|claude`. `auto` uses the API
+when a key is configured (cheap, spends no subscription quota) and otherwise a
+signed-in Claude Code, run as `claude -p --tools ""` — no tools at all, a plain
+text call. ADR-003 made the endpoint configurable but still required *some*
+key; now a Claude subscription alone is enough to run a build. This is what
+made the first zero-configuration build possible: `rocto doctor` reports
+Ready on a machine with no API key, and a real build passed 22/22 there.
+
+---
+
+## ADR-005 — Checkpoints, resume, and retries for transient failures
+
+**Decision.** Every stage ends in a checkpoint: `task.json` after planning, and
+one record per attempt in `run.json` (`executor`, `outcome`, checks,
+seconds, cost, failure). `rocto resume` continues from the first stage that did
+not finish. Attempt numbers keep counting across sessions, so logs are never
+overwritten. A page that was written but never verified is verified before
+anything is regenerated. Ctrl+C records `interrupted`; an unexpected exception
+records `failed` with a traceback in `.rocto/logs/crash.txt`; neither leaves a
+phase that claims to still be running.
+
+Planner and API-executor requests retry 408/409/425/429/5xx/529, connection
+errors and timeouts up to three times, with exponential backoff that respects
+`Retry-After`, capped at 30 s per wait. Other 4xx fail at once.
+
+**Why.** An unattended build — a batch, a nightly run, an issue-triggered
+workflow — that dies on one 503, or a person who presses Ctrl+C at minute
+four, previously had exactly one option: pay for the whole build again in a new
+directory.
+
+---
+
+## ADR-006 — Escalation, budgets and a local ledger
+
+**Escalation.** With `--executor auto`, a backend whose pages fail verification
+`--escalate-after` times in a row (default 2) is moved behind the others, so the
+next repair comes from a different model with the failure evidence. It is
+demoted, not removed: if it is the only available backend it still runs.
+Pinned backends never escalate. Router logs record who was demoted and why.
+
+**Budgets.** `--max-minutes` and `--max-cost-usd` stop the build *before* a new
+attempt would start, as a resumable `stopped` state (exit 5). Cost counts only
+what a backend reports: Claude Code reports dollars; the API backends report
+tokens, which are recorded but not priced.
+
+**Ledger.** Every build, resume and refine appends one line to
+`$ROCTO_HOME/ledger.jsonl`; `rocto stats` summarises pass rates, times and
+spend per executor. The idea is stored only as a hash. This is the data ADR-002
+said a smarter router would need — the router still does not use it.
+
+---
+
+## ADR-007 — One summary, three renderings
+
+**Decision.** `report.collect()` gathers `run.json`, `task.json`,
+`acceptance-report.json`, `contract-warnings.json` and the screenshot into one
+`BuildSummary`. From it: `report.html` (self-contained, offline, screenshot
+inlined, light and dark), the terminal summary at the end of every run, and a
+Markdown block for pull requests (`rocto report --format markdown`). Test
+steps are described in words ("Click [start]", "[count] shows “1”") by
+pairing each harness check with the spec step it came from. Contract warnings
+appear under **Not verified** in all three.
+
+**Why.** The facts were all on disk but spread across five files; a build
+ended by printing three paths. One collector means the terminal, the HTML and
+the pull request can never disagree.
+
+---
+
+## ADR-008 — `rocto refine` changes a finished build, or leaves it as it was
+
+**Decision.** `rocto refine "<change>"` works only on a build that passed. It
+snapshots the site, contract and evidence to `.rocto/history/rev-<n>/`, asks
+the planner to *extend* the contract (existing tests stay, so they guard what
+already worked), has the executor edit the files in place — the API backend
+receives the current files, since it cannot read them — and verifies
+everything again. On success the revision number increments; on failure the
+snapshot is restored and the build is still the last good one.
+`--keep-failed` leaves the failed change in place for inspection.
+
+**Why rollback by default.** A change request against something that works
+should never leave something that does not. This goes past the v0.1 boundary
+("only new pages") on purpose: iterating on a result is the most common next
+step after a first build, and doing it by re-running `build` threw away the
+contract that made the first result trustworthy.
+
+**Observed.** A real refine ("add a Skip button that completes the current
+pomodoro") passed 28/28 on the first attempt, and the contract warning about
+the counter disappeared, because the new tests observe it change.
+
+---
+
+## ADR-009 — GitHub automation: an issue label in, a verified pull request out
+
+**Decision.** `.github/workflows/build-from-issue.yml`: labelling an issue
+`rocto:build` builds the idea (title plus body) with the API planner and
+DeepSeek executor, and opens a pull request containing `builds/<name>/` with
+the screenshot and summary in its description. A build that fails its checks
+comments the failure summary on the issue instead. `pages.yml` publishes
+every passing build in `builds/` as a gallery on GitHub Pages; `nightly.yml`
+runs the benchmark batch and fails when fewer than four of five pass.
+
+**Security.**
+
+- Adding a label requires triage access, so the label is the approval step;
+  opening an issue cannot spend the API key.
+- Issue text is attacker-controllable. It reaches rocto only as environment
+  variables read by `scripts/ci_build.py` and passed as one argument, never
+  interpolated into a shell script.
+- Two jobs. `build` holds the API key and runs model-written code in a
+  browser, with a read-only token and no git credentials on disk. `publish`
+  holds the write token and never runs generated code. The browser itself
+  never sees any credential (KI-009).
+- Only `run.json`, `task.json` and `contract-warnings.json` are committed from
+  `.rocto/`; model transcripts in `.rocto/logs/` stay in the workflow artifact.
+
+**Not yet observed.** The workflows pass `actionlint`, and the build step was
+rehearsed locally with the same script and environment variables. None of the
+three has run on GitHub yet: that needs a `DEEPSEEK_API_KEY` repository secret,
+and Pages needs enabling once.

@@ -1,7 +1,8 @@
 # Rainbow Octopus 🐙🌈
 
 > A small engineering agent that turns one sentence into a **review-ready,
-> automatically verified static web demo**.
+> automatically verified static web demo** — and keeps it that way as you
+> change it.
 
 Repository: <https://github.com/luminous-creator/Rainbow-Octopus>
 
@@ -14,45 +15,145 @@ The whole run is kept in [`demo-output/pomodoro-2/`](demo-output/pomodoro-2/),
 including [what that green report failed to catch](docs/KNOWN_ISSUES.md#ki-007--a-passing-contract-that-verified-almost-nothing--fixed).</sub>
 
 Rainbow Octopus is not another general agent framework. It is a narrow,
-observable workflow:
+observable workflow that runs start to finish without supervision:
 
 ```text
-idea → DeepSeek task specification → the first available coding agent
-     → deterministic Chromium checks → repair (up to two times) → artifacts
+idea → task specification (checked, repaired) → the first available coding agent
+     → deterministic checks in a real browser → repair, escalating to another
+       model if the same one keeps failing → report.html + screenshot
 ```
 
-The first release runs on Windows, macOS and Linux and deliberately supports
-one task: creating a new vanilla HTML/CSS/JavaScript demo in an empty directory.
+It runs on Windows, macOS and Linux and deliberately does one kind of task:
+a vanilla HTML/CSS/JavaScript page, built new or changed in place.
 
-### Try it with no account, no CLI, no browser
-
-The whole pipeline can be rehearsed offline. Two model calls are replaced by
-fixed responses; the planner, the router, the executor boundary enforcement and
-the static half of the verifier are all the real code:
+## Quick start
 
 ```bash
-git clone https://github.com/luminous-creator/Rainbow-Octopus
-cd Rainbow-Octopus
+pip install -e .
+rocto doctor                         # what is installed, what to fix
+rocto build "一个带今日完成次数统计的番茄钟网页"
+rocto open                           # the report of the build you just ran
+```
+
+That is the whole loop. There is no output directory to choose (builds go to
+`rocto-builds/<timestamp>-<slug>/`), and every follow-up command defaults to
+the last build.
+
+**What you need:** Python 3.10+, a Chromium-family browser (Chrome, Chromium,
+Edge, Brave — or one Playwright installed), and **one** of:
+
+- a signed-in [Claude Code](https://claude.com/claude-code) CLI — then no API
+  key is needed at all; Claude Code plans and writes the page, or
+- an API key for any OpenAI-compatible endpoint (`DEEPSEEK_API_KEY` by default).
+
+`rocto doctor` tells you which of these it found and prints the one command
+that fixes whatever is missing.
+
+### Try it with no account and no CLI
+
+The whole pipeline can be rehearsed offline. The two model calls are replaced by
+fixed responses; the planner, the router, the executor boundary enforcement and
+the verifier are the real code (and when a browser is installed, the page is
+really driven in it):
+
+```bash
 python scripts/dry_run.py router
 ```
 
 The `router` scenario simulates a signed-out Claude Code and a broken Codex, and
-shows the failover picking DeepSeek. Takes about ten seconds and needs nothing
-installed — the package has no third-party dependencies.
+shows the failover picking DeepSeek.
 
-## Why this exists
+## What a run looks like
 
-Using AI for engineering means switching windows, rewriting prompts, watching
-long runs, and manually checking whether the result actually works. Rainbow
-Octopus moves that supervision into a small CLI: DeepSeek defines the observable
-contract, a coding agent builds inside a scoped workspace, and a local Chrome,
-Chromium, Brave or Edge executes a restricted test plan before the result is
-accepted.
+```text
+$ rocto build "做一个25分钟番茄钟网页，支持开始、暂停、重置，并显示今日完成次数"
+[  0.3s] plan     asking Claude Code for a task specification
+[ 29.8s] plan     5 contract elements, 14 assertions
+[ 29.8s] contract 'completed-count' is only ever asserted as '0'; no test observes it change …
+[ 29.8s] build    attempt 1/3 — writing the site
+[ 65.0s] build    site written by claude
+[ 65.0s] verify   checking files, contract, then driving a browser
+[ 80.6s] done     22/22 checks passed
 
-It also solves a smaller, more annoying problem. If you hold several AI
-subscriptions, one of them is usually unavailable — logged out, rate limited,
-or broken by a bad install. The executor router treats them as interchangeable
-and simply uses whichever one works right now.
+  PASS  25-Minute Pomodoro Timer — Works — every check passed
+        22/22 checks passed · 1 attempt · written by claude · $0.12
+
+  Not verified (a passing report does not cover these):
+    - 'completed-count' is only ever asserted as '0'; no test observes it change …
+
+  Report:  rocto-builds/20260926-070527-build/report.html
+  Next:    rocto open rocto-builds/20260926-070527-build
+```
+
+That is a real run, on a Linux container with no API key and no configuration.
+Then, to change it:
+
+```text
+$ rocto refine "增加一个“跳过”按钮：点击后立即结束当前番茄钟，完成次数加一"
+[  0.3s] refine   revision 1: 增加一个“跳过”按钮 … (backup: rev-0)
+[ 21.7s] plan     6 contract elements, 20 assertions
+[ 48.6s] build    site written by claude
+[ 69.9s] done     28/28 checks passed
+```
+
+The old tests stay in the contract, so the refine had to keep everything that
+already worked; the new ones observe the counter change, so the "Not verified"
+warning is gone. Had the change failed its checks, the previous version would
+have been restored.
+
+`report.html` is a single offline page: the verdict in plain words, the
+screenshot, every check described as a step ("Click [start]", "[timer] shows
+“25:00”"), what was **not** verified, and who wrote each attempt, how long it
+took and what it cost.
+
+## Commands
+
+```text
+rocto build IDEA   [-o DIR] [--planner auto|api|claude] [--executor auto|claude|codex|deepseek]
+                   [--max-retries 0..4] [--escalate-after N] [--max-minutes M] [--max-cost-usd USD]
+                   [--review-plan] [--spec task.json] [--open] [-q | --json-events]
+rocto resume [DIR]            continue from the last checkpoint
+rocto refine CHANGE [DIR]     change a passing build; rolls back if the change fails
+rocto status [DIR]            state, attempts, and the next command to run
+rocto report [DIR] [--format text|markdown|html]
+rocto open [DIR] [--site]     open report.html (or the page)
+rocto serve [DIR]             preview on http://127.0.0.1:8765
+rocto doctor                  prerequisites, with a fix for each failure
+rocto config [show|set|unset|path]    rocto init    (writes a commented rocto.toml)
+rocto stats                   pass rates, time and spend per executor, from every past build
+rocto batch FILE              build a list of ideas unattended
+rocto gallery DIR -o SITE     publish passing builds as one static site
+```
+
+`DIR` defaults to the last build everywhere.
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | success |
+| 2 | bad usage, unsafe output path, or nothing to act on |
+| 3 | planning failed |
+| 4 | generation or verification failed after retries (`rocto resume` continues) |
+| 5 | stopped at `--max-minutes` / `--max-cost-usd` (`rocto resume` continues) |
+| 6 | plan rejected at `--review-plan` |
+| 130 | interrupted (`rocto resume` continues) |
+
+### Nothing is lost when a build stops
+
+Every stage ends in a checkpoint. Ctrl+C, a crash, a rate limit that outlasted
+the retries, or a budget stop all leave a state that `rocto resume` continues:
+the plan is not paid for again, a page that was written but never checked is
+checked first, and attempt numbers keep counting so no log is overwritten.
+Transient API failures (429, 5xx, timeouts) are retried with backoff before
+anything is reported as failed.
+
+### Unattended options
+
+- `--json-events` prints one JSON object per event plus a final `result`
+  object — for scripts and other agents. Every build also writes the same
+  events to `.rocto/events.jsonl`.
+- `--review-plan` shows the plan in words and asks **y / e(dit) / n** before any
+  generation is paid for. Without a terminal it is skipped with a warning.
+- `--spec task.json` builds from a specification you already have.
 
 ## Executors
 
@@ -63,303 +164,185 @@ machine.
 
 | Backend | Needs | Notes |
 | --- | --- | --- |
-| `claude` | Claude Code CLI, signed in | Runs with `--tools "Read,Write,Edit"`, so it has **no shell access at all**. Spend capped per attempt with `--max-budget-usd`. |
+| `claude` | Claude Code CLI, signed in | Runs with `--tools "Read,Write,Edit,Glob"`, so it has **no shell access at all**. Spend capped per attempt (`claude_budget_usd`, default $1.50). |
 | `codex` | Codex CLI, signed in | Runs `codex exec --sandbox workspace-write`. Automatically retries once without Codex's sandbox if the Windows sandbox helper is missing (see KI-002). |
-| `deepseek` | `DEEPSEEK_API_KEY` only | One HTTPS call returns the four files as JSON; **rocto writes them itself**. No second vendor account, no Node, no global install. |
+| `deepseek` | An API key only | One HTTPS call returns the four files as JSON; **rocto writes them itself**. Works with any OpenAI-compatible endpoint. |
 
-```powershell
-rocto build "idea" --output .\demo                     # auto
-rocto build "idea" --output .\demo --executor claude   # pin one
+**Escalation.** If the same backend's page fails verification twice in a row
+(`--escalate-after`, default 2), the next repair goes to the next backend, with
+the failure evidence. A different model is more likely to see what the first
+one keeps missing.
+
+**Which subscription gets spent.** Claude Code and Codex draw on a monthly
+quota, so the order is configurable:
+
+```bash
+rocto config set executor_order "deepseek,codex,claude"   # save quota
+rocto config set executor_order "claude,deepseek"         # best effort, e.g. for a demo
 ```
 
-### Controlling which subscription gets spent
+The planner is chosen the same way: `--planner auto` uses the API when a key is
+set (cheap, no subscription quota) and Claude Code otherwise.
 
-Claude Code and Codex draw on a monthly quota you cannot top up mid-month, so
-the order is configurable. Put the free backend first for routine work, and the
-strongest one first when the output is going in front of someone:
+## Configuration
 
-```powershell
-$env:ROCTO_EXECUTOR_ORDER = "deepseek,codex,claude"   # save quota (recommended default)
-$env:ROCTO_EXECUTOR_ORDER = "claude,deepseek"         # best effort, e.g. for a demo
-$env:ROCTO_EXECUTOR_ORDER = "deepseek"                # never touch a paid CLI
+Every setting is an environment variable, and `rocto.toml` (in the working
+directory) or the user config (`rocto config path`) can provide defaults for
+them. An explicit environment variable or CLI flag always wins.
+
+```bash
+rocto init                              # commented rocto.toml with every setting
+rocto config set max_retries 3          # user config
+rocto config                            # every setting, its value, and where it came from
 ```
 
-Unknown names are ignored and duplicates collapse, so a typo degrades to the
-built-in order rather than failing the build.
-
-### Progress
-
-A build blocks for minutes inside a single model call, so every phase prints as
-it happens:
-
-```text
-[  0.0s] start   output: D:\demo\pomodoro
-[  0.4s] plan    asking deepseek-v4-flash for a task specification
-[ 81.2s] plan    7 contract elements, 31 assertions
-[ 81.2s] build   attempt 1/3 — writing the site
-[118.7s] build   site written by deepseek
-[118.7s] verify  checking files, contract, then driving Chromium
-[124.9s] done    12/12 checks passed
+```toml
+# rocto.toml
+executor_order = "deepseek,claude"
+max_minutes = 20
+api_base = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"     # the NAME of the variable holding the key
+model = "deepseek/deepseek-chat"
 ```
 
-Use `-q` to silence it.
+**API keys are never read from files** — `api_key = …` is rejected. Use
+`ROCTO_API_KEY` / `DEEPSEEK_API_KEY`, or name your own variable with
+`api_key_env`, so a config file is always safe to commit.
 
-Every run records who was chosen and why the others were passed over in
-`.rocto/logs/router-attempt-N.json`:
+<details><summary>All environment variables</summary>
 
-```json
-{
-  "winner": "deepseek",
-  "skipped_or_failed": [
-    "claude: skipped (2.1.219 (Claude Code) — not signed in)",
-    "codex: Codex did not produce: index.html, styles.css, script.js, README.md"
-  ]
-}
-```
+| Variable | Setting |
+| --- | --- |
+| `ROCTO_API_BASE`, `ROCTO_API_KEY`, `DEEPSEEK_API_KEY` | endpoint and key (any OpenAI-compatible `/chat/completions`) |
+| `ROCTO_PLANNER` | `auto` \| `api` \| `claude` |
+| `ROCTO_DEEPSEEK_MODEL`, `ROCTO_DEEPSEEK_CODER_MODEL` | API planner / executor model |
+| `ROCTO_EXECUTOR`, `ROCTO_EXECUTOR_ORDER`, `ROCTO_ESCALATE_AFTER` | routing |
+| `ROCTO_MAX_RETRIES`, `ROCTO_TIMEOUT`, `ROCTO_PLANNER_TIMEOUT` | attempts and timeouts |
+| `ROCTO_MAX_MINUTES`, `ROCTO_MAX_COST_USD` | budgets |
+| `ROCTO_OUTPUT_ROOT`, `ROCTO_OPEN` | where builds go; open the report when done |
+| `ROCTO_BROWSER_BIN` (`ROCTO_EDGE_BIN`), `ROCTO_BROWSER_NO_SANDBOX` | browser |
+| `ROCTO_CLAUDE_BIN`, `ROCTO_CLAUDE_MODEL`, `ROCTO_CLAUDE_BUDGET_USD`, `ROCTO_CODEX_BIN` | CLIs |
+| `ROCTO_HOME` | user config, ledger and last-build pointer |
 
-## Requirements
+</details>
 
-- Windows 11, macOS or Linux
-- Python 3.10 or newer
-- Google Chrome, Chromium, Brave or Microsoft Edge
-- An API key for any OpenAI-compatible chat-completions endpoint, used for
-  planning and as the always-available executor. DeepSeek is the default
-  because it is cheap and does not spend a Claude or ChatGPT subscription quota
-- Optional: Claude Code CLI and/or Codex CLI for the agentic backends
+## Automation on GitHub
 
-### Using a provider other than DeepSeek
+Three workflows turn the repository into a build service:
 
-Nothing in the request is DeepSeek-specific — it is a plain
-`/chat/completions` call with `response_format: json_object`. Point it
-anywhere that speaks the same protocol:
+| Workflow | Trigger | Does |
+| --- | --- | --- |
+| `build-from-issue.yml` | label an issue **`rocto:build`** (or run it manually) | builds the issue's idea and opens a **pull request** with the page, screenshot and report; a failed build comments why on the issue |
+| `pages.yml` | push to `main` under `builds/` | publishes every passing build as a gallery on GitHub Pages |
+| `nightly.yml` | every night | runs the five benchmark ideas; fails if fewer than four pass |
 
-```powershell
-$env:ROCTO_API_BASE = "https://api.openai.com/v1"   ; $env:ROCTO_API_KEY = "sk-..."
-$env:ROCTO_API_BASE = "https://openrouter.ai/api/v1"; $env:ROCTO_API_KEY = "sk-or-..."
-$env:ROCTO_API_BASE = "http://localhost:11434/v1"   ; $env:ROCTO_API_KEY = "ollama"
-```
+Setup, once:
 
-Set `--model` (or `ROCTO_DEEPSEEK_MODEL`) to a model that endpoint serves.
-`DEEPSEEK_API_KEY` still works on its own and needs no other change. A provider
-that ignores `response_format: json_object` fails loudly at the planner's JSON
-parse rather than quietly producing a bad specification.
+1. **Settings → Secrets and variables → Actions → New repository secret:**
+   `DEEPSEEK_API_KEY` (or `ROCTO_API_KEY`, plus a `ROCTO_API_BASE` variable for
+   another provider).
+2. **Issues → Labels → New label:** `rocto:build`.
+3. **Settings → Pages → Source: GitHub Actions** (for the gallery).
+4. **Settings → Actions → General → Workflow permissions:** allow GitHub Actions
+   to create pull requests.
 
-## Install
-
-During local development:
-
-```powershell
-python -m pip install -e .
-$env:DEEPSEEK_API_KEY = "your-key"
-rocto doctor
-```
-
-After the PyPI release:
-
-```powershell
-python -m pip install rainbow-octopus
-```
-
-If a CLI is installed somewhere unusual, point at it directly:
-
-```powershell
-$env:ROCTO_CLAUDE_BIN = "C:\path\to\claude.exe"
-$env:ROCTO_CODEX_BIN  = "C:\path\to\codex.exe"
-$env:ROCTO_BROWSER_BIN = "C:\path\to\chrome.exe"
-```
-
-`ROCTO_BROWSER_BIN` takes priority over automatic browser discovery.
-`ROCTO_EDGE_BIN` remains supported as the older name.
-
-`rocto doctor` reports each backend separately. Lines marked `--` are optional —
-the build only needs one of them:
-
-```text
-[OK  ] python             3.12.4
-[OK  ] planner_api        key configured, endpoint DeepSeek (default)
-[OK  ] executor           auto -> claude, deepseek
-[OK  ] executor:claude    2.1.219 (Claude Code) (subscription)
-[--  ] executor:codex     Codex CLI not found
-[OK  ] executor:deepseek  deepseek executor ready (model=deepseek-v4-flash)
-[OK  ] browser            Microsoft Edge: C:\Program Files (x86)\Microsoft\Edge\...\msedge.exe
-```
-
-## Quick start
-
-The output path must be new or empty. Rainbow Octopus never overwrites an
-existing project.
-
-```powershell
-rocto build "做一个带今日完成次数统计的番茄钟网页" --output .\pomodoro
-rocto status .\pomodoro
-```
-
-Successful output:
-
-```text
-pomodoro/
-├── index.html
-├── styles.css
-├── script.js
-├── README.md
-├── screenshot.png
-├── acceptance-report.json
-└── .rocto/
-    ├── task.json
-    ├── run.json
-    └── logs/
-```
-
-Open `index.html` after the command completes.
-
-## Commands
-
-```text
-rocto doctor [--json]
-rocto build IDEA --output PATH [--executor auto|claude|codex|deepseek]
-                               [--model MODEL] [--max-retries 0..2] [--timeout N]
-rocto status PATH [--json]
-```
-
-The default planner model is `deepseek-v4-flash`; override with `--model` or
-`ROCTO_DEEPSEEK_MODEL`. `ROCTO_EXECUTOR` sets the default backend.
-
-Exit codes: `0` success, `2` bad usage or unsafe output path, `3` planning
-failed, `4` generation or verification failed after retries.
+Security: only someone with triage access can add a label, so opening an issue
+cannot spend the key; issue text never reaches a shell; the job that runs
+generated code has a read-only token, and the job that can push never runs
+generated code. See ADR-009.
 
 ## Contract checks
 
 Deterministic verification is only worth as much as the contract it verifies.
 A build can pass every assertion and still not do what was asked, so the task
 specification is checked before any code is written, and the planner gets its
-failures back as evidence and retries — the same loop the executor has.
+failures — and its own rejected reply — back to repair.
 
 Two rules block a specification:
 
 - **No clock-shaped value asserted after a `wait`,** unless the same value is
   also asserted with no wait before it. Expecting `24:58` two seconds after
   starting a `25:00` timer does not test the timer; it is satisfied more
-  cheaply by adjusting the tick rate than by building the clock correctly, and
-  an agent will take the cheaper route. Counters are exempt — they change on a
-  click, not with elapsed time.
+  cheaply by adjusting the tick rate than by building the clock correctly.
 - **No `ui_contract` element that no test ever selects.** A declared, untested
   element reads as coverage that does not exist.
 
-One rule reports without blocking: an element whose assertions all expect the
-same value is recorded to `.rocto/contract-warnings.json` and printed during
-the build. It is not an error because some properties are genuinely
-unverifiable within the test DSL — no sequence of `wait` steps capped at
-3000 ms can watch a 25 minute timer reach zero. Surfacing it keeps a green
-report from implying more than it checked.
+Every test is an independent case: it runs in a freshly loaded page with empty
+localStorage and sessionStorage, so no test can pass or fail because of what an
+earlier one left behind (KI-011).
 
-See KI-007 in [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) for the build that
-prompted all of this: 31 of 31 assertions green, on a page whose counter never
-left zero.
+One rule reports without blocking: an element whose assertions all expect the
+same value appears under **Not verified** in the terminal, in `report.html` and
+in pull requests. See KI-007 for the build that prompted all of this.
 
 ## Safety model
 
 - Refuses filesystem roots, the user home directory, and non-empty outputs.
-- **The four generated filenames are an allowlist.** For the DeepSeek backend
-  the model never touches the disk — it returns file contents and rocto writes
-  them, so "never write outside `--output`" is an enforced invariant rather
-  than a request in a prompt.
-- **The Claude Code backend runs without the Bash tool**, so it cannot execute
-  a shell command even if asked to.
+- **The four generated filenames are an allowlist.** For the API backend the
+  model never touches the disk — it returns file contents and rocto writes
+  them.
+- **The Claude Code executor runs without the Bash tool**, and the Claude Code
+  planner runs with no tools at all.
 - Anything an agent leaves inside the output directory that is not part of the
-  contract is deleted, and recorded in the execution log.
+  contract is deleted and recorded in the execution log.
 - Protects `.rocto/task.json` against executor modification.
-- Success is decided by what is on disk, never by an exit code — an agent that
-  reports success without writing the files is a failure.
-- Accepts only seven browser-test actions: `click`, `fill`, `wait`,
-  `selector_exists`, `text_visible`, `attribute_equals`, `no_console_errors`.
-- Accepts only exact `data-testid` selectors declared in the task contract.
+- Success is decided by what is on disk, never by an exit code.
+- Accepts only seven browser-test actions and only exact `data-testid`
+  selectors declared in the contract.
 - Never executes model-generated shell or Python.
 - Rejects external URLs and browser network APIs in generated source.
-- Does not store API keys, and redacts them from logs.
+- **The browser never sees a credential:** it is started with every
+  `*KEY*`/`*TOKEN*`/`*SECRET*` variable removed from its environment.
+- Does not store API keys — not in config files, logs or the ledger (which
+  stores only a hash of each idea).
+- `refine` snapshots before changing anything and restores on failure.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    U["User idea"] --> P["DeepSeek planner"]
-    P --> T["Validated TaskSpec<br/>data-testid contract"]
-    T --> R{"Executor router"}
-    R -->|1| CC["Claude Code<br/>no shell tools"]
-    R -->|2| CX["Codex CLI<br/>workspace-write"]
-    R -->|3| DS["DeepSeek<br/>rocto writes the files"]
-    CC --> W["Static website"]
+    U["Idea / change request"] --> P["Planner<br/>API or Claude Code"]
+    P --> C{"Contract checks"}
+    C -->|rejected: evidence| P
+    C --> T["task.json<br/>checkpoint"]
+    T --> R{"Executor router<br/>failover + escalation"}
+    R --> CC["Claude Code<br/>no shell"]
+    R --> CX["Codex CLI"]
+    R --> DS["API executor<br/>rocto writes files"]
+    CC --> W["Static site"]
     CX --> W
     DS --> W
-    W --> S["Static gate<br/>files · offline · testids"]
-    S --> V["Edge harness<br/>click · assert · screenshot"]
+    W --> V["Verifier<br/>static gate + real browser"]
     V -->|failure evidence| R
-    V -->|pass| A["Code + screenshot + report"]
+    V -->|pass| A["report.html · screenshot<br/>ledger · PR"]
 ```
-
-The verifier runs the page in headless Edge against a local HTTP server. The
-injected harness posts its verdict back to that server, so verification never
-depends on guessing how long the page needs (see KI-003).
 
 ## Development
 
 The package has no third-party runtime dependencies.
 
-```powershell
-$env:PYTHONPATH = "src;tests"
-python -m unittest discover -s tests -v
-python -m build --wheel
-```
-
-Rehearse the entire pipeline offline — no API key, no CLI, no browser. The
-`router` scenario simulates a signed-out Claude Code and a broken Codex and
-shows the failover:
-
-```powershell
-python scripts/dry_run.py router
-```
-
-Run the five frozen release benchmarks after configuring the live services:
-
-```powershell
-python scripts/run_benchmarks.py
-```
-
-Remove throwaway artifacts (build output, test venv, failed experiment logs):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\clean.ps1 -WhatIf
+```bash
+PYTHONPATH=src:tests python -m unittest discover -s tests -v   # ";" on Windows
+python scripts/dry_run.py all
+python scripts/run_benchmarks.py        # the five frozen benchmarks, live services
 ```
 
 ## 当前边界
 
-v0.1 只生成新的静态网页，不修改已有仓库，不控制 Claude/ChatGPT/Gemini 的网页版，
-也不生成论文或 PPT。这样做是为了先把「需求 — 执行 — 确定性验收 — 返工」这条链路
-真正跑通。多执行器路由已经可用，但只做固定优先级降级，不做基于历史成功率的智能
-调度——那需要真实数据，属于 v0.2。
-
-## Portability
-
-Verification supports Chrome, Chromium, Brave and Edge on Windows, macOS and
-Linux. Windows keeps Edge first because it is the combination proven by KI-001;
-macOS prefers applications under `/Applications` and `~/Applications`; Linux
-uses the conventional browser executable names on `PATH`.
-
-Set `ROCTO_BROWSER_BIN` when the browser is installed somewhere unusual.
-`ROCTO_EDGE_BIN` is retained as a legacy alias. If discovery finds nothing,
-`rocto doctor` prints a platform-specific install command. The verifier still
-uses only the Python standard library and the local browser—there is no
-Playwright, Selenium or webdriver dependency.
+生成的仍然只是纯静态网页（HTML/CSS/JS 四个文件），不修改已有仓库，不控制
+Claude/ChatGPT/Gemini 的网页版。多执行器路由是固定优先级 + 失败升级，不做基于历史
+成功率的智能调度——`rocto stats` 已经开始积累这份数据，智能调度属于下一步。
 
 ## Status
 
-KI-001 through KI-008 are fixed. The live browser interaction test —
-`VerifierTests.test_real_browser_interaction_and_screenshot`, which launches a
-discovered browser, loads the page, clicks through it, asserts, posts the
-verdict back and captures a screenshot — passes on a real Windows 11 host, and
-[`demo-output/pomodoro-2/`](demo-output/pomodoro-2/) is a complete build that
-went through that path end to end. Known limits are in
-[`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md); nothing is claimed there that
-has not been observed.
+KI-001 through KI-011 are fixed; see [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
+for each, and ADR-001 to ADR-009 for the decisions behind the design. The real
+browser loop has been observed on Windows 11 with Edge and on Linux with
+Chromium (including as root in a container); two live builds — a new site and a
+refine of it — passed there with Claude Code as planner and executor. The GitHub
+workflows pass `actionlint` and their build step has been rehearsed locally,
+but they have not yet run on GitHub. Nothing is claimed that has not been
+observed.
 
 ## License
 

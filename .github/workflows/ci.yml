@@ -24,6 +24,11 @@ jobs:
         run: |
           $env:PYTHONPATH = "src"
           python -m unittest discover -s tests -v
+      - name: Rehearse the pipeline offline
+        env:
+          PYTHONPATH: src
+          ROCTO_HOME: ${{ runner.temp }}/rocto-home
+        run: python scripts/dry_run.py all
       - name: Build wheel
         run: python -m pip wheel . --no-deps -w dist
       - name: Install wheel
@@ -65,3 +70,25 @@ jobs:
             printf '::error title=Portable browser suite failed::%s\n' "$failure_tail"
           fi
           exit "$status"
+
+  container-as-root:
+    # KI-009: Docker and most CI containers run as root, where Chromium will
+    # not start without --no-sandbox, and the only browser is often the one
+    # Playwright installed. This job is that environment.
+    name: Browser loop (root container, Playwright Chromium)
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.47.0-jammy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Discover the Playwright browser as root
+        env:
+          PYTHONPATH: src
+        run: |
+          id -u
+          python -c "from rainbow_octopus.verifier import find_browser, _sandbox_flags; b = find_browser(); print(b, _sandbox_flags()); assert b and '--no-sandbox' in _sandbox_flags()"
+      - name: Run the full suite, including the real browser test
+        env:
+          PYTHONPATH: src
+          ROCTO_HOME: /tmp/rocto-home
+        run: python -m unittest discover -s tests -v

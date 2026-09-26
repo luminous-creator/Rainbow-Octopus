@@ -922,8 +922,8 @@ Rules:
 - index.html must link styles.css and script.js with relative paths.
 - Put every data-testid from the ui_contract on the matching visible element,
   spelled exactly as given.
-- All declared acceptance tests must pass deterministically, including after a
-  page reload. Never write to localStorage or sessionStorage.
+- All declared acceptance tests must pass deterministically. Each test runs
+  in a freshly loaded page with empty localStorage and sessionStorage.
 - No uncaught exceptions and nothing logged to console.error.
 - Make it look good: sensible layout, spacing, contrast, responsive, keyboard
   accessible.
@@ -982,8 +982,11 @@ Hard boundaries:
 - Use vanilla HTML/CSS/JavaScript. No dependencies, CDNs, external URLs,
   network requests, modules, build tools, or package managers.
 - Put every required data-testid on the matching interactive or visible element.
+  Elements created at runtime (list rows, cards) must get their data-testid
+  from script.js when they are created.
 - Make the interface polished, responsive, accessible, and usable offline.
-- Ensure the test steps remain deterministic after page reload.
+- Each acceptance test runs in a freshly loaded page with empty localStorage
+  and sessionStorage, and must pass deterministically.
 - Do not merely describe the solution: write the files.
 
 TASK SPECIFICATION:

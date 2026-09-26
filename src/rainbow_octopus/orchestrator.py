@@ -476,10 +476,12 @@ class Orchestrator:
         total = self.max_retries + 1
         first = state.attempt + 1
 
-        # A page that was written but never verified (interrupted or crashed
-        # between the two) is checked before anything is regenerated.
+        # On resume, a complete page already on disk is checked before any
+        # model is paid to write another: it may never have been verified
+        # (interrupted between the two), or it may have failed a check that
+        # was wrong (KI-011) or flaky. Verifying costs seconds and nothing.
         if verify_first is None:
-            verify_first = _written_but_unverified(state, project_dir)
+            verify_first = _page_on_disk(state, project_dir)
         if verify_first:
             report = self._verify(project_dir, store, state, spec, state.attempt)
             if report.passed:
@@ -695,11 +697,8 @@ def _close_running_attempt(state: RunState, outcome: str) -> None:
         state.attempts[-1]["outcome"] = outcome
 
 
-def _written_but_unverified(state: RunState, project_dir: Path) -> bool:
+def _page_on_disk(state: RunState, project_dir: Path) -> bool:
     if not state.attempts:
-        return False
-    last = state.attempts[-1]
-    if last.get("outcome") != "executed":
         return False
     return all((project_dir / name).is_file() for name in GENERATED_FILES)
 

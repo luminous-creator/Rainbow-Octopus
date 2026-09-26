@@ -349,6 +349,31 @@ def _graphics_flags(path: Path) -> tuple[str, ...]:
     return ()
 
 
+def _declares_testid(test_id: str, html_text: str, script_text: str) -> bool:
+    """Is ``test_id`` on the page, or put there by the page's script?
+
+    KI-011: list items, rows and cards exist only after the script renders
+    them, so a todo list's ``todo-item`` is legitimately absent from
+    index.html. Demanding it there sent the executor to repair a page that
+    was fine — or to add a hidden placeholder just to satisfy the check. The
+    browser run still has the final word on whether the element appears.
+    """
+    quoted = re.escape(test_id)
+    markup = re.compile(rf"""data-testid\s*=\s*\\?["']{quoted}\\?["']""")
+    if markup.search(html_text):
+        return True
+    # Looking an element up is not creating it: drop every [data-testid=...]
+    # selector first, then accept the id in generated markup, in
+    # setAttribute/dataset calls, or as a string constant.
+    creating = _TESTID_SELECTOR.sub(" ", script_text)
+    if markup.search(creating):
+        return True
+    return re.search(rf"""["'`]{quoted}["'`]""", creating) is not None
+
+
+_TESTID_SELECTOR = re.compile(r"""\[\s*data-testid\s*=\s*\\?["'][^"'\]]*\\?["']\s*\]""")
+
+
 def _sandbox_flags(system: str | None = None) -> tuple[str, ...]:
     """KI-009: Chromium refuses to start as root unless its sandbox is off.
 
@@ -403,6 +428,15 @@ class BrowserVerifier:
         self.timeout = timeout
 
     def verify(self, project_dir: Path, spec: TaskSpec) -> AcceptanceReport:
+        # KI-010: a screenshot from an earlier attempt must never survive into
+        # this one's report — not when this run stops before the browser, and
+        # not when the new capture fails.
+        stale = project_dir / "screenshot.png"
+        if stale.exists():
+            try:
+                stale.unlink()
+            except OSError:
+                pass
         checks: list[AcceptanceCheck] = []
         for name in REQUIRED_FILES:
             exists = (project_dir / name).is_file()
@@ -429,13 +463,13 @@ class BrowserVerifier:
         html_text = (project_dir / "index.html").read_text(
             encoding="utf-8", errors="replace"
         )
+        script_text = strip_comments(
+            (project_dir / "script.js").read_text(encoding="utf-8", errors="replace")
+        )
         missing_ids = [
             item.test_id
             for item in spec.ui_contract
-            if not re.search(
-                rf"""data-testid\s*=\s*["']{re.escape(item.test_id)}["']""",
-                html_text,
-            )
+            if not _declares_testid(item.test_id, html_text, script_text)
         ]
         checks.append(
             AcceptanceCheck(
@@ -443,7 +477,8 @@ class BrowserVerifier:
                 not missing_ids,
                 "all declared data-testid values are present"
                 if not missing_ids
-                else "missing: " + ", ".join(missing_ids),
+                else "missing: " + ", ".join(missing_ids)
+                + " (neither in index.html nor created by script.js)",
             )
         )
         if missing_ids:
@@ -480,15 +515,22 @@ class BrowserVerifier:
             self._inject_harness(staging / "index.html", spec)
 
             with _serve(staging) as (url, server):
+                server.rocto_timeout = self._harness_timeout(spec)
                 harness = self._run_edge_harness(url, temp / "profile", server)
                 checks.extend(harness["checks"])
                 console_errors = harness["console_errors"]
 
             with _serve(pristine) as (shot_url, _):
-                screenshot_path = project_dir / "screenshot.png"
+                # KI-010: capture into a fresh path and copy only on success.
+                # Waiting for "a stable, non-empty file" at a path that
+                # already held last attempt's PNG returned immediately, killed
+                # the browser before it wrote, and shipped the old image.
+                captured = temp / "screenshot.png"
                 screenshot_ok, screenshot_detail = self._take_screenshot(
-                    shot_url, screenshot_path, temp / "screenshot-profile"
+                    shot_url, captured, temp / "screenshot-profile"
                 )
+                if screenshot_ok and captured.is_file():
+                    shutil.copy2(captured, project_dir / "screenshot.png")
                 checks.append(
                     AcceptanceCheck("screenshot", screenshot_ok, screenshot_detail)
                 )
@@ -515,15 +557,31 @@ class BrowserVerifier:
         return findings
 
     def _inject_harness(self, index_path: Path, spec: TaskSpec) -> None:
+        """Inject the test runner.
+
+        KI-011: every test runs in its own page load. The planner writes each
+        test as an independent case — "add a task, delete it, the list is
+        empty" — and the harness used to run them back to back in one page,
+        so each test inherited whatever the previous ones left behind. A todo
+        contract whose fourth test assumed an empty list was unsatisfiable by
+        any correct page, and all three attempts were spent on it. Now test
+        ``i`` loads ``index.html?rocto_test=i`` with localStorage and
+        sessionStorage cleared before the page's own scripts run, posts its
+        part of the verdict, and navigates to the next test.
+        """
         html = index_path.read_text(encoding="utf-8")
-        steps = [
-            {"test": test.name, **step.__dict__}
+        tests = [
+            {
+                "name": test.name,
+                "steps": [{"test": test.name, **step.__dict__} for step in test.steps],
+            }
             for test in spec.tests
-            for step in test.steps
         ]
         early = """
 <script>
 window.__roctoErrors = [];
+try { localStorage.clear(); } catch (e) {}
+try { sessionStorage.clear(); } catch (e) {}
 window.addEventListener("error", e => window.__roctoErrors.push(String(e.message)));
 window.addEventListener("unhandledrejection", e => window.__roctoErrors.push(String(e.reason)));
 const __roctoOriginalError = console.error;
@@ -534,15 +592,31 @@ console.error = (...args) => {
 </script>
 """
         result_path = RESULT_PATH
-        watchdog_ms = max(2000, (self.timeout - 5) * 1000)
+        watchdog_ms = max(2000, (self._harness_timeout(spec) - 5) * 1000)
         runner = f"""
 <script>
 window.addEventListener("DOMContentLoaded", async () => {{
-  const steps = {json.dumps(steps, ensure_ascii=False)};
+  const tests = {json.dumps(tests, ensure_ascii=False)};
+  const params = new URLSearchParams(location.search);
+  const index = Number(params.get("rocto_test") || "0");
+  const test = tests[index];
   const checks = [];
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const record = (name, passed, detail) => checks.push({{name, passed, detail}});
-  for (const step of steps) {{
+  const isVisible = el => {{
+    if (!el) return false;
+    const style = getComputedStyle(el);
+    return style.display !== "none" && style.visibility !== "hidden" && !el.closest("[hidden]");
+  }};
+  const where = (el) => !el ? "; element not found" : (isVisible(el) ? "" : "; element is hidden");
+  // attribute_equals on value/checked means the live state, not the markup.
+  const readAttribute = (el, name) => {{
+    if (!el) return null;
+    if (name === "value" && "value" in el) return String(el.value);
+    if (name === "checked" && typeof el.checked === "boolean") return String(el.checked);
+    return el.getAttribute(name);
+  }};
+  for (const step of test ? test.steps : []) {{
     try {{
       const el = step.selector ? document.querySelector(step.selector) : null;
       if (step.action === "click") {{
@@ -559,17 +633,16 @@ window.addEventListener("DOMContentLoaded", async () => {{
         await sleep(step.timeout_ms || 0);
         record(step.test + ":wait", true, String(step.timeout_ms || 0));
       }} else if (step.action === "selector_exists") {{
-        record(step.test + ":selector_exists", Boolean(el), step.selector);
+        record(step.test + ":selector_exists", Boolean(el),
+          step.selector + (el ? "" : " not found"));
       }} else if (step.action === "text_visible") {{
-        const visible = Boolean(el) && getComputedStyle(el).display !== "none"
-          && getComputedStyle(el).visibility !== "hidden";
         const actual = el ? (el.textContent || "").trim() : "";
-        record(step.test + ":text_visible", visible && actual.includes(step.expected),
-          "expected=" + step.expected + "; actual=" + actual);
+        record(step.test + ":text_visible", isVisible(el) && actual.includes(step.expected),
+          "expected=" + step.expected + "; actual=" + actual + where(el));
       }} else if (step.action === "attribute_equals") {{
-        const actual = el ? el.getAttribute(step.attribute) : null;
+        const actual = readAttribute(el, step.attribute);
         record(step.test + ":attribute_equals", actual === step.expected,
-          "expected=" + step.expected + "; actual=" + actual);
+          "expected=" + step.expected + "; actual=" + actual + (el ? "" : "; element not found"));
       }} else if (step.action === "no_console_errors") {{
         record(step.test + ":no_console_errors", window.__roctoErrors.length === 0,
           window.__roctoErrors.join(" | ") || "none");
@@ -579,36 +652,43 @@ window.addEventListener("DOMContentLoaded", async () => {{
       record(step.test + ":" + step.action, false, String(error));
     }}
   }}
-  __roctoReport(checks);
+  __roctoPost({{part: index, parts: tests.length, checks: checks,
+    console_errors: window.__roctoErrors}});
+  if (index + 1 < tests.length) {{
+    location.replace(location.pathname + "?rocto_test=" + (index + 1));
+  }} else {{
+    __roctoShowResult(checks);
+  }}
 }});
 
-function __roctoReport(checks) {{
-  if (window.__roctoReported) return;
-  window.__roctoReported = true;
-  const payload = JSON.stringify({{
-    checks: checks,
-    console_errors: window.__roctoErrors,
-  }});
-  const result = document.createElement("pre");
-  result.id = "rocto-result";
-  result.textContent = payload;
-  document.body.appendChild(result);
+function __roctoPost(verdict) {{
+  if (window.__roctoPosted) return;
+  window.__roctoPosted = true;
+  const payload = JSON.stringify(verdict);
   try {{
     const blob = new Blob([payload], {{type: "application/json"}});
     if (!navigator.sendBeacon("{result_path}", blob)) {{
-      fetch("{result_path}", {{method: "POST", body: payload}});
+      fetch("{result_path}", {{method: "POST", body: payload, keepalive: true}});
     }}
   }} catch (error) {{
-    fetch("{result_path}", {{method: "POST", body: payload}});
+    fetch("{result_path}", {{method: "POST", body: payload, keepalive: true}});
   }}
 }}
 
+// Kept for humans debugging a staged copy; nothing reads it (KI-003).
+function __roctoShowResult(checks) {{
+  const result = document.createElement("pre");
+  result.id = "rocto-result";
+  result.textContent = JSON.stringify(checks);
+  document.body.appendChild(result);
+}}
+
 // Watchdog: never let a hung page stall the verifier silently.
-setTimeout(() => __roctoReport([{{
+setTimeout(() => __roctoPost({{checks: [{{
   name: "harness:watchdog",
   passed: false,
   detail: "harness did not finish within {watchdog_ms}ms",
-}}]), {watchdog_ms});
+}}]}}), {watchdog_ms});
 </script>
 """
         if re.search(r"<head[^>]*>", html, re.IGNORECASE):
@@ -628,6 +708,21 @@ setTimeout(() => __roctoReport([{{
         else:
             html += runner
         index_path.write_text(html, encoding="utf-8")
+
+    def _harness_timeout(self, spec: TaskSpec | None) -> int:
+        """Seconds to wait for every test's verdict.
+
+        One page load per test (KI-011) and up to 3 s of waiting per step
+        means a large contract can legitimately need more than the flat
+        default. The budget is the configured timeout or the contract's own
+        worst case plus a few seconds per page load, whichever is larger.
+        """
+        if spec is None:
+            return self.timeout
+        waits = sum(
+            (step.timeout_ms or 0) for test in spec.tests for step in test.steps
+        ) / 1000
+        return int(max(self.timeout, waits + 4 * len(spec.tests) + 10))
 
     def _run_edge_harness(self, url: str, profile: Path, server) -> dict:
         """Run the page in headless Edge and wait for the harness to POST back.
@@ -682,8 +777,9 @@ setTimeout(() => __roctoReport([{{
                 "console_errors": [],
             }
 
+        budget = getattr(server, "rocto_timeout", None) or self.timeout
         try:
-            delivered = server.rocto_ready.wait(self.timeout)
+            delivered = server.rocto_ready.wait(budget)
         finally:
             _terminate(process)
             if log_file:
@@ -695,7 +791,12 @@ setTimeout(() => __roctoReport([{{
                 tail = log_path.read_text(encoding="utf-8", errors="replace")[-400:]
             except OSError:
                 pass
-            detail = f"harness did not report within {self.timeout}s"
+            detail = f"harness did not report within {budget}s"
+            if server.rocto_parts:
+                detail += (
+                    f" (finished {len(server.rocto_parts)} of "
+                    f"{server.rocto_expected} tests)"
+                )
             if tail.strip():
                 detail = f"{detail}; edge stderr: {tail.strip()}"
             return {
@@ -873,6 +974,48 @@ class _HarnessServer(ThreadingHTTPServer):
         super().__init__(*args, **kwargs)
         self.rocto_result: str | None = None
         self.rocto_ready = threading.Event()
+        self.rocto_timeout: int | None = None
+        #: KI-011: one verdict part per test, keyed by test index.
+        self.rocto_parts: dict[int, dict] = {}
+        self.rocto_expected: int | None = None
+        self._rocto_lock = threading.Lock()
+
+    def accept_verdict(self, body: str) -> None:
+        """Store a posted verdict; finish once every part has arrived.
+
+        A payload without ``part`` (the watchdog, or a single-shot harness)
+        is a complete verdict on its own, and as before the first complete
+        verdict wins.
+        """
+        with self._rocto_lock:
+            if self.rocto_ready.is_set():
+                return
+            try:
+                payload = json.loads(body)
+            except (TypeError, ValueError):
+                payload = None
+            if not (
+                isinstance(payload, dict)
+                and isinstance(payload.get("part"), int)
+                and isinstance(payload.get("parts"), int)
+            ):
+                self.rocto_result = body
+                self.rocto_ready.set()
+                return
+            self.rocto_expected = payload["parts"]
+            self.rocto_parts.setdefault(payload["part"], payload)
+            if len(self.rocto_parts) >= self.rocto_expected:
+                ordered = [self.rocto_parts[key] for key in sorted(self.rocto_parts)]
+                self.rocto_result = json.dumps(
+                    {
+                        "checks": [c for part in ordered for c in part.get("checks", [])],
+                        "console_errors": [
+                            e for part in ordered for e in part.get("console_errors", [])
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+                self.rocto_ready.set()
 
     def handle_error(self, request, client_address) -> None:
         """Stay quiet when the browser is killed mid-connection.
@@ -897,10 +1040,7 @@ class _QuietHandler(SimpleHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
-        server = self.server
-        if getattr(server, "rocto_result", None) is None:
-            server.rocto_result = body.decode("utf-8", errors="replace")
-            server.rocto_ready.set()
+        self.server.accept_verdict(body.decode("utf-8", errors="replace"))
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self.end_headers()

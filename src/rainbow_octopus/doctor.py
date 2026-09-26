@@ -104,7 +104,7 @@ def run_doctor() -> list[DoctorCheck]:
         _planner_check(key, where, "claude" in usable),
     ]
 
-    selected = os.environ.get("ROCTO_EXECUTOR", "auto")
+    selected = os.environ.get("ROCTO_EXECUTOR") or "auto"
     if selected == "auto":
         routed = [name for name in auto_order() if name in usable]
         detail = (

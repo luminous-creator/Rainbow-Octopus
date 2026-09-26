@@ -82,7 +82,7 @@ def _add_run_options(parser: argparse.ArgumentParser, *, planning: bool) -> None
     parser.add_argument(
         "--executor",
         choices=EXECUTOR_CHOICES,
-        default=os.environ.get("ROCTO_EXECUTOR", "auto"),
+        default=os.environ.get("ROCTO_EXECUTOR") or "auto",
         help=f"Who writes the site. 'auto' tries {order} (ROCTO_EXECUTOR_ORDER), "
         "skipping any that is not installed or signed in",
     )
@@ -124,13 +124,13 @@ def _add_run_options(parser: argparse.ArgumentParser, *, planning: bool) -> None
         parser.add_argument(
             "--planner",
             choices=PLANNER_CHOICES,
-            default=os.environ.get("ROCTO_PLANNER", "auto"),
+            default=os.environ.get("ROCTO_PLANNER") or "auto",
             help="Who writes the task specification. 'auto' uses the API when a "
             "key is set, otherwise a signed-in Claude Code",
         )
         parser.add_argument(
             "--model",
-            default=os.environ.get("ROCTO_DEEPSEEK_MODEL", "deepseek-v4-flash"),
+            default=os.environ.get("ROCTO_DEEPSEEK_MODEL") or "deepseek-v4-flash",
             help="Model for the API planner",
         )
         parser.add_argument(
@@ -247,8 +247,25 @@ def build_parser() -> argparse.ArgumentParser:
 # ------------------------------------------------------------------------ main
 
 
+def _tolerant_output() -> None:
+    """Never crash on a character the console cannot show.
+
+    Summaries carry the user's idea (often Chinese) and ✅/❌ marks. On a
+    Windows pipe with a legacy code page, printing them raised
+    UnicodeEncodeError after the build had already succeeded.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            try:
+                reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
     global _CONFIG_SOURCES
+    _tolerant_output()
     try:
         loaded = load_config()
         _CONFIG_SOURCES = apply_config(loaded)

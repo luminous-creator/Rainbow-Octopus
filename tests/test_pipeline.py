@@ -116,9 +116,11 @@ class ResumeTests(PipelineTestCase):
         self.assertEqual([a["outcome"] for a in state.attempts], ["verification_failed", "interrupted"])
 
         executor2 = Executor()
-        second = Orchestrator(planner, executor2, Verifier([PASS]), max_retries=2)
+        verifier2 = Verifier([FAIL, PASS])
+        second = Orchestrator(planner, executor2, verifier2, max_retries=2)
         report = second.resume(self.out)
         self.assertTrue(report.passed)
+        self.assertEqual(verifier2.calls, 2, "the page on disk is re-checked first, for free")
         self.assertEqual(planner.calls, 1, "resume must not pay for the plan again")
         attempt, failure, _ = executor2.calls[0]
         self.assertEqual(attempt, 3, "attempt numbers continue, so logs are not overwritten")
@@ -137,6 +139,16 @@ class ResumeTests(PipelineTestCase):
         Orchestrator(Planner(), executor2, verifier, max_retries=0).resume(self.out)
         self.assertEqual(executor2.calls, [], "the existing page passed; nothing is regenerated")
         self.assertEqual(verifier.calls, 1)
+
+    def test_a_page_that_now_passes_is_not_regenerated(self):
+        """KI-011: a correct page failed by a wrong check costs nothing to rescue."""
+        with self.assertRaises(BuildError):
+            Orchestrator(Planner(), Executor(), Verifier([FAIL]), 0).build("c", self.out, "m")
+        executor = Executor()
+        report = Orchestrator(Planner(), executor, Verifier([PASS]), 0).resume(self.out)
+        self.assertTrue(report.passed)
+        self.assertEqual(executor.calls, [])
+        self.assertEqual(self.state().phase, "completed")
 
     def test_resume_replans_when_planning_never_finished(self):
         class BrokenPlanner(Planner):
@@ -205,7 +217,7 @@ class ArtifactTests(PipelineTestCase):
         executor = Executor(raise_on={2: KeyboardInterrupt()})
         with self.assertRaises(KeyboardInterrupt):
             Orchestrator(Planner(), executor, Verifier([FAIL]), 2, ledger=ledger).build("c", self.out, "m")
-        Orchestrator(Planner(), Executor(), Verifier([PASS]), 2, ledger=ledger).resume(self.out)
+        Orchestrator(Planner(), Executor(), Verifier([FAIL, PASS]), 2, ledger=ledger).resume(self.out)
         entries = ledger.entries()
         self.assertEqual([e["outcome"] for e in entries], ["interrupted", "completed"])
         self.assertEqual([a["attempt"] for a in entries[1]["attempts"]], [3])
@@ -214,6 +226,7 @@ class ArtifactTests(PipelineTestCase):
         self.assertEqual(summary["builds"], 2)
         self.assertEqual(summary["executors"]["deepseek"]["verified"], 2)
         self.assertEqual(summary["executors"]["deepseek"]["pass_rate"], 0.5)
+        self.assertEqual(self.state().attempts[0]["outcome"], "verification_failed")
 
 
 class GuardTests(PipelineTestCase):
@@ -310,7 +323,7 @@ class EscalationTests(PipelineTestCase):
         with self.assertRaises(BuildError):
             orchestrator.build("c", self.out, "m")
         router2, claude2, deepseek2 = self._router(escalate_after=1)
-        Orchestrator(Planner(), router2, Verifier([PASS]), 0).resume(self.out)
+        Orchestrator(Planner(), router2, Verifier([FAIL, PASS]), 0).resume(self.out)
         self.assertEqual(claude2.calls, [])
         self.assertEqual(len(deepseek2.calls), 1)
 

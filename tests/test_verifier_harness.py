@@ -68,6 +68,57 @@ class ServeTests(unittest.TestCase):
                     urllib.request.urlopen(request, timeout=5).read()
                 self.assertEqual(json.loads(server.rocto_result)["marker"], "first")
 
+    def test_per_test_parts_are_combined_in_test_order(self):
+        """KI-011: one page load per test, one verdict part per page."""
+        with tempfile.TemporaryDirectory() as tmp:
+            site = Path(tmp)
+            write_sample_site(site)
+            with _serve(site) as (url, server):
+                base = url.rsplit("/", 1)[0]
+
+                def post(payload):
+                    urllib.request.urlopen(
+                        urllib.request.Request(
+                            base + RESULT_PATH, data=json.dumps(payload).encode(), method="POST"
+                        ),
+                        timeout=5,
+                    ).read()
+
+                post({"part": 1, "parts": 2, "checks": [{"name": "b", "passed": True, "detail": ""}],
+                      "console_errors": ["late"]})
+                self.assertFalse(server.rocto_ready.is_set())
+                post({"part": 0, "parts": 2, "checks": [{"name": "a", "passed": True, "detail": ""}],
+                      "console_errors": []})
+                self.assertTrue(server.rocto_ready.wait(5))
+                combined = json.loads(server.rocto_result)
+        self.assertEqual([c["name"] for c in combined["checks"]], ["a", "b"])
+        self.assertEqual(combined["console_errors"], ["late"])
+
+    def test_watchdog_verdict_ends_a_multi_part_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            site = Path(tmp)
+            write_sample_site(site)
+            with _serve(site) as (url, server):
+                server.accept_verdict(json.dumps({"part": 0, "parts": 3, "checks": []}))
+                server.accept_verdict(json.dumps({"checks": [{"name": "harness:watchdog", "passed": False}]}))
+                self.assertTrue(server.rocto_ready.is_set())
+                self.assertIn("watchdog", server.rocto_result)
+
+    def test_harness_budget_grows_with_the_contract(self):
+        verifier = BrowserVerifier(browser_path=Path("/fake/chromium"), timeout=30)
+        self.assertEqual(verifier._harness_timeout(sample_spec()), 30)
+        from rainbow_octopus.models import TaskSpec
+
+        data = sample_spec().to_dict()
+        data["tests"] = [
+            {"name": f"t{i}", "steps": [{"action": "wait", "timeout_ms": 3000}] * 5 + [
+                {"action": "click", "selector": '[data-testid="increment"]'},
+                {"action": "text_visible", "selector": '[data-testid="count"]', "expected": "1"},
+            ]}
+            for i in range(7)
+        ]
+        self.assertGreater(verifier._harness_timeout(TaskSpec.from_dict(data)), 150)
+
     def test_unknown_post_path_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             site = Path(tmp)
@@ -358,6 +409,46 @@ class ScreenshotIsolationTests(unittest.TestCase):
         self.assertNotIn(RESULT_PATH, seen["shot_html"], "harness leaked into screenshot")
         self.assertNotIn("__roctoErrors", seen["shot_html"])
         self.assertIn('data-testid="increment"', seen["shot_html"])
+
+    def test_a_repeat_verification_never_keeps_the_old_screenshot(self):
+        """KI-010: the second attempt shipped the first attempt's PNG."""
+
+        class Shooter(BrowserVerifier):
+            captures = []
+
+            def _run_edge_harness(self, url, profile, server):
+                return {"checks": [], "console_errors": []}
+
+            def _take_screenshot(self, url, screenshot, profile):
+                self.captures.append(screenshot)
+                if screenshot.exists():
+                    raise AssertionError("capture path must start empty")
+                screenshot.write_bytes(b"new")
+                return True, "ok"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            write_sample_site(project)
+            (project / "screenshot.png").write_bytes(b"old")
+            report = Shooter(browser_path=Path("/fake/chromium")).verify(project, sample_spec())
+            self.assertEqual((project / "screenshot.png").read_bytes(), b"new")
+            self.assertEqual(report.screenshot, "screenshot.png")
+
+    def test_a_failed_capture_leaves_no_stale_screenshot(self):
+        class Failing(BrowserVerifier):
+            def _run_edge_harness(self, url, profile, server):
+                return {"checks": [], "console_errors": []}
+
+            def _take_screenshot(self, url, screenshot, profile):
+                return False, "no capture"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            write_sample_site(project)
+            (project / "screenshot.png").write_bytes(b"old")
+            report = Failing(browser_path=Path("/fake/chromium")).verify(project, sample_spec())
+            self.assertFalse((project / "screenshot.png").exists())
+            self.assertIsNone(report.screenshot)
 
 
 class TeardownNoiseTests(unittest.TestCase):

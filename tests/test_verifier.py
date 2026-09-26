@@ -3,7 +3,8 @@ import os
 import tempfile
 import unittest
 
-from rainbow_octopus.verifier import BrowserVerifier, find_browser
+from rainbow_octopus.models import TaskSpec
+from rainbow_octopus.verifier import BrowserVerifier, _declares_testid, find_browser
 from tests.helpers import sample_spec, write_sample_site
 
 
@@ -82,6 +83,98 @@ class VerifierTests(unittest.TestCase):
             names = {check.name for check in report.checks}
             self.assertIn("browser_run", names)
             self.assertIn("increments:click", names)
+
+    @unittest.skipIf(browser_test_reason(), browser_test_reason() or "")
+    def test_every_test_starts_from_a_fresh_page(self):
+        """KI-011: tests are independent cases, so each gets its own page load.
+
+        The page keeps its count in localStorage and renders list items from
+        script.js. Both tests click once and expect exactly one item and a
+        count of 1 — satisfiable only if neither memory nor storage leaks from
+        the first test into the second.
+        """
+        step = lambda action, testid=None, **kw: {  # noqa: E731
+            "action": action,
+            **({"selector": f'[data-testid="{testid}"]'} if testid else {}),
+            "timeout_ms": 0,
+            **kw,
+        }
+        independent = [
+            step("fill", "name", value="milk"),
+            step("click", "add"),
+            step("text_visible", "count", expected="1"),
+            step("text_visible", "item", expected="milk"),
+            step("attribute_equals", "name", attribute="value", expected=""),
+            step("text_visible", "empty", expected="nothing"),
+        ]
+        spec = TaskSpec.from_dict(
+            {
+                "title": "List",
+                "goal": "Add items",
+                "features": ["Add"],
+                "constraints": ["None"],
+                "ui_contract": [
+                    {"test_id": t, "purpose": t}
+                    for t in ("name", "add", "count", "item", "empty")
+                ],
+                "tests": [
+                    {"name": "first", "steps": independent},
+                    {"name": "second", "steps": independent},
+                ],
+            }
+        )
+        with tempfile.TemporaryDirectory() as temp_name:
+            project = Path(temp_name)
+            (project / "index.html").write_text(
+                """<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body>
+<input data-testid="name"><button data-testid="add">Add</button>
+<output data-testid="count">0</output><ul id="list"></ul>
+<p data-testid="empty" hidden>nothing</p>
+<script src="script.js"></script></body></html>""",
+                encoding="utf-8",
+            )
+            (project / "styles.css").write_text("body{}", encoding="utf-8")
+            (project / "script.js").write_text(
+                """let n = Number(localStorage.getItem("n") || 0);
+const count = document.querySelector('[data-testid="count"]');
+const input = document.querySelector('[data-testid="name"]');
+count.textContent = String(n);
+document.querySelector('[data-testid="add"]').addEventListener("click", () => {
+  const li = document.createElement("li");
+  li.dataset.testid = "item";
+  li.textContent = input.value;
+  document.getElementById("list").appendChild(li);
+  input.value = "";
+  n += 1; localStorage.setItem("n", String(n)); count.textContent = String(n);
+});""",
+                encoding="utf-8",
+            )
+            (project / "README.md").write_text("# List", encoding="utf-8")
+            report = BrowserVerifier().verify(project, spec)
+        checks = {(c.name, c.passed): c.detail for c in report.checks}
+        details = [(c.name, c.passed, c.detail) for c in report.checks]
+        self.assertTrue(
+            next(c for c in report.checks if c.name == "testid_contract").passed,
+            "items created by script.js count as declared",
+        )
+        counts = [c for c in report.checks if c.name.endswith(":text_visible") and "actual=1" in c.detail]
+        self.assertEqual(len(counts), 2, details)
+        self.assertTrue(all(c.passed for c in counts), details)
+        values = [c for c in report.checks if c.name.endswith(":attribute_equals")]
+        self.assertTrue(all(c.passed for c in values), "value reads the live property: " + str(details))
+        hidden = [c for c in report.checks if "expected=nothing" in c.detail]
+        self.assertTrue(hidden and all(not c.passed and "element is hidden" in c.detail for c in hidden), details)
+        self.assertEqual(len([c for c in report.checks if c.name.startswith("second:")]), 6, details)
+
+
+class TestIdDeclarationTests(unittest.TestCase):
+    def test_script_created_ids_count_but_lookups_do_not(self):
+        lookup = "document.querySelector('[data-testid=\"row\"]')"
+        self.assertFalse(_declares_testid("row", "<body></body>", lookup))
+        self.assertTrue(_declares_testid("row", "", 'li.dataset.testid = "row";'))
+        self.assertTrue(_declares_testid("row", "", "el.setAttribute('data-testid', 'row')"))
+        self.assertTrue(_declares_testid("row", "", "html += `<li data-testid=\"row\">`"))
+        self.assertTrue(_declares_testid("row", '<li data-testid="row">', ""))
 
 
 if __name__ == "__main__":

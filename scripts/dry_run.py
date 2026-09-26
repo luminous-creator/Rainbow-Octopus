@@ -1,9 +1,10 @@
 """Offline end-to-end rehearsal of the rocto pipeline.
 
 Runs the real Planner, the real RouterExecutor, the real DeepSeekExecutor and
-the real static half of the Verifier, with every network call and every CLI
-subprocess replaced by a stub. Proves the whole chain wires up without needing
-a DeepSeek key, Claude Code, Codex, or a browser.
+the real Verifier, with every network call and every CLI subprocess replaced
+by a stub. Proves the whole chain wires up without needing a DeepSeek key,
+Claude Code or Codex. When a Chromium-family browser is installed the page is
+really driven in it; without one, only the static half of the verifier runs.
 
 Two scenarios:
 
@@ -33,7 +34,7 @@ from rainbow_octopus.executor import (  # noqa: E402
 )
 from rainbow_octopus.orchestrator import Orchestrator  # noqa: E402
 from rainbow_octopus.planner import DeepSeekPlanner  # noqa: E402
-from rainbow_octopus.verifier import BrowserVerifier  # noqa: E402
+from rainbow_octopus.verifier import BrowserVerifier, find_browser  # noqa: E402
 
 SPEC = {
     "title": "Pomodoro",
@@ -192,7 +193,7 @@ def scenario(label: str, executor) -> int:
     orchestrator = Orchestrator(
         planner=make_planner(),
         executor=executor,
-        verifier=BrowserVerifier(browser_path=Path("missing-browser")),
+        verifier=BrowserVerifier(browser_path=find_browser() or Path("missing-browser")),
         max_retries=0,
     )
     try:
