@@ -259,6 +259,12 @@ class ContainerBrowserTests(unittest.TestCase):
                 with (
                     mock.patch("rainbow_octopus.verifier.platform.system", return_value="Linux"),
                     mock.patch("rainbow_octopus.verifier.shutil.which", return_value=None),
+                    # The CI runner really has /opt/google/chrome; this test
+                    # is about what happens when no system browser exists.
+                    mock.patch(
+                        "rainbow_octopus.verifier._browser_candidates",
+                        return_value=([], ("chromium",)),
+                    ),
                 ):
                     self.assertEqual(find_browser(), new)
                 system_chrome = touch(root / "usr-bin-chromium")
@@ -270,6 +276,14 @@ class ContainerBrowserTests(unittest.TestCase):
                     ),
                 ):
                     self.assertEqual(find_browser(), system_chrome)
+
+    def test_a_missing_home_directory_is_not_a_crash(self):
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch("rainbow_octopus.verifier.Path.home", side_effect=RuntimeError("no home")),
+        ):
+            self.assertEqual(_playwright_candidates("Linux"), [])
+            self.assertEqual(_playwright_candidates("Darwin"), [])
 
     def test_playwright_layouts_per_platform(self):
         with tempfile.TemporaryDirectory() as temp_name:

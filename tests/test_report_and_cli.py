@@ -174,7 +174,8 @@ class BuildCommandTests(CliTestCase):
         # status, report and resume default to the last build
         code, out, _ = self.run_cli("status")
         self.assertEqual(code, 0)
-        self.assertIn(str(project), out)
+        # resolve(): Windows temp dirs can come back as 8.3 short names.
+        self.assertIn(str(project.resolve()), out)
         self.assertIn("next:", out)
         code, out, _ = self.run_cli("report", "--format", "markdown")
         self.assertIn("### ✅", out)

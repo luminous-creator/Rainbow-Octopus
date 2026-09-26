@@ -269,10 +269,17 @@ def _playwright_roots(system: str) -> list[Path]:
         local = os.environ.get("LOCALAPPDATA")
         if local:
             roots.append(Path(local) / "ms-playwright")
-    elif system == "Darwin":
-        roots.append(Path.home() / "Library" / "Caches" / "ms-playwright")
+        return roots
+    try:
+        home = Path.home()
+    except (RuntimeError, KeyError, OSError):
+        # No resolvable home (a stripped service or CI environment):
+        # discovery must degrade to "not found", never crash.
+        return roots
+    if system == "Darwin":
+        roots.append(home / "Library" / "Caches" / "ms-playwright")
     else:
-        roots.append(Path.home() / ".cache" / "ms-playwright")
+        roots.append(home / ".cache" / "ms-playwright")
     return roots
 
 

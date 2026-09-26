@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 import importlib.util
+import io
 import os
 import tempfile
 import unittest
@@ -73,8 +75,15 @@ class MainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output_file = Path(tmp) / "out.txt"
             env = {"ISSUE_TITLE": "   ", "ISSUE_BODY": "", "DISPATCH_IDEA": "", "GITHUB_OUTPUT": str(output_file)}
-            with mock.patch.dict(os.environ, env), mock.patch.object(ci_build.cli, "main") as run:
+            with (
+                mock.patch.dict(os.environ, env),
+                mock.patch.object(ci_build.cli, "main") as run,
+                # The script prints a ::error:: workflow command; in CI that
+                # would surface as a real annotation on every run.
+                redirect_stdout(io.StringIO()) as printed,
+            ):
                 ci_build.main()
+            self.assertIn("No idea", printed.getvalue())
             run.assert_not_called()
             self.assertIn("exit_code=2", output_file.read_text(encoding="utf-8"))
 

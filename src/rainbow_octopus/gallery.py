@@ -87,6 +87,7 @@ def build_gallery(
                 "checks": f"{summary.checks_passed}/{summary.checks_total}",
                 "screenshot": (target / "screenshot.png").is_file(),
                 "revision": summary.revision,
+                "started_at": summary.started_at,
             }
         )
 
@@ -98,7 +99,9 @@ def build_gallery(
 
 def _render_index(title: str, cards: list[dict]) -> str:
     items = []
-    for card in reversed(cards):  # newest first: build names start with a timestamp
+    # Newest first. Build names are not always timestamps (issue-12-…), so
+    # sort by when each build started.
+    for card in sorted(cards, key=lambda c: c.get("started_at") or "", reverse=True):
         shot = (
             f'<img src="{escape(card["name"])}/screenshot.png" alt="" loading="lazy">'
             if card["screenshot"] else '<div class="noshot">no screenshot</div>'
