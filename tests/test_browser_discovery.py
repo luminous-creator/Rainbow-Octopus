@@ -274,6 +274,10 @@ class ContainerBrowserTests(unittest.TestCase):
                         "rainbow_octopus.verifier.shutil.which",
                         side_effect=lambda name: str(system_chrome) if name == "chromium" else None,
                     ),
+                    mock.patch(
+                        "rainbow_octopus.verifier._browser_candidates",
+                        return_value=([], ("chromium",)),
+                    ),
                 ):
                     self.assertEqual(find_browser(), system_chrome)
 
